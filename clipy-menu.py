@@ -801,10 +801,17 @@ class ClipyWindow(Gtk.Window):
                 color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
                 
                 swatch = Gtk.EventBox()
+                swatch.set_size_request(18, 18)
                 swatch.get_style_context().add_class("color-swatch")
-                rgba = Gdk.RGBA()
-                if rgba.parse(color_hex):
-                    swatch.override_background_color(Gtk.StateFlags.NORMAL, rgba)
+                
+                # Apply color dynamically via local CSS provider (override_background_color is deprecated/ignored)
+                color_provider = Gtk.CssProvider()
+                css_data = f"* {{ background-color: {color_hex}; }}".encode()
+                color_provider.load_from_data(css_data)
+                swatch.get_style_context().add_provider(
+                    color_provider,
+                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                )
                 
                 color_row.pack_start(swatch, False, False, 0)
                 color_row.pack_start(content_label, True, True, 0)
