@@ -834,6 +834,10 @@ class ClipyWindow(Gtk.Window):
 # ---------------------------------------------------------------------------
 
 def main():
+    # Set program name so GNOME matches it to clipy.desktop (StartupWMClass)
+    GLib.set_prgname('Clipy')
+    GLib.set_application_name('Clipy')
+
     # Apply CSS
     css_provider = Gtk.CssProvider()
     css_provider.load_from_data(CSS)
