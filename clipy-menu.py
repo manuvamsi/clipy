@@ -26,7 +26,7 @@ import time
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
-from gi.repository import Gtk, Gdk, GLib, Pango
+from gi.repository import Gtk, Gdk, GLib, Pango, GdkPixbuf
 
 # ---------------------------------------------------------------------------
 # Paths & config
@@ -475,18 +475,33 @@ class ClipyWindow(Gtk.Window):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header.set_margin_bottom(6)
 
-        logo_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        title = Gtk.Label(label="📋  Clipy")
+        # Header Logo + Title row
+        logo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        
+        # Load and scale custom icon
+        icon_image = Gtk.Image()
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipy_icon.png")
+        if os.path.exists(icon_path):
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 32, 32, True)
+                icon_image.set_from_pixbuf(pixbuf)
+            except Exception:
+                pass
+        logo_row.pack_start(icon_image, False, False, 0)
+
+        logo_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        title = Gtk.Label(label="Clipy")
         title.set_halign(Gtk.Align.START)
         title.get_style_context().add_class("header-title")
-        logo_box.pack_start(title, False, False, 0)
+        logo_text_box.pack_start(title, False, False, 0)
 
         subtitle = Gtk.Label(label="Clipboard History")
         subtitle.set_halign(Gtk.Align.START)
         subtitle.get_style_context().add_class("header-subtitle")
-        logo_box.pack_start(subtitle, False, False, 2)
+        logo_text_box.pack_start(subtitle, False, False, 2)
 
-        header.pack_start(logo_box, True, True, 0)
+        logo_row.pack_start(logo_text_box, True, True, 0)
+        header.pack_start(logo_row, True, True, 0)
 
         self.count_label = Gtk.Label(label="0 items")
         self.count_label.get_style_context().add_class("header-count")
