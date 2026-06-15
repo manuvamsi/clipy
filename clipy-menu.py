@@ -302,10 +302,23 @@ def fetch_history():
 
 
 def delete_item(item_id):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("DELETE FROM clipboard_history WHERE id = ?", (item_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT content, content_type FROM clipboard_history WHERE id = ?", (item_id,))
+        row = c.fetchone()
+        if row:
+            content, ctype = row[0], row[1]
+            if ctype == 'image' and content and os.path.exists(content):
+                try:
+                    os.remove(content)
+                except Exception as e:
+                    print(f"[clipy-menu] error deleting image: {e}", file=sys.stderr)
+        c.execute("DELETE FROM clipboard_history WHERE id = ?", (item_id,))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[clipy-menu] db delete error: {exc}", file=sys.stderr)
 
 
 def toggle_pin(item_id, currently_pinned):
@@ -316,10 +329,21 @@ def toggle_pin(item_id, currently_pinned):
     conn.close()
 
 
-def copy_to_clipboard(text):
+def copy_to_clipboard(item):
     try:
-        p = subprocess.Popen(['xsel', '-b', '-i'], stdin=subprocess.PIPE, text=True)
-        p.communicate(input=text)
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        if item.get("type") == "image":
+            if os.path.exists(item["content"]):
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(item["content"])
+                clipboard.set_image(pixbuf)
+                clipboard.store()
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+        else:
+            clipboard.set_text(item["content"], -1)
+            clipboard.store()
+            while Gtk.events_pending():
+                Gtk.main_iteration()
     except Exception as exc:
         print(f"[clipy-menu] copy error: {exc}", file=sys.stderr)
 
@@ -396,6 +420,65 @@ def get_clipboard_stats():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+URL_RE   = re.compile(r'^https?://', re.I)
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', re.I)
+CODE_HINTS = re.compile(r'(?:def |function |import |#include|class |const |let |var |=>|\{.*\})', re.S)
+NUM_RE   = re.compile(r'^[\d\s\-+().]+$')
+
+def classify_content(text: str) -> str:
+    stripped = text.strip()
+    if URL_RE.match(stripped):
+        return "url"
+    if EMAIL_RE.match(stripped):
+        return "email"
+    if NUM_RE.match(stripped) and len(stripped) <= 30:
+        return "number"
+    if CODE_HINTS.search(stripped):
+        return "code"
+    return "text"
+
+
+def save_text_clip(text, content_type):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO clipboard_history (content, created_at, pinned, content_type)
+            VALUES (?, CURRENT_TIMESTAMP, 0, ?)
+            ON CONFLICT(content) DO UPDATE SET
+                created_at   = CURRENT_TIMESTAMP,
+                content_type = excluded.content_type
+        ''', (text, content_type))
+        
+        c.execute('''
+            SELECT content, content_type FROM clipboard_history
+            WHERE pinned = 0
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET 50
+        ''')
+        to_delete = c.fetchall()
+        for content, ctype in to_delete:
+            if ctype == 'image' and content and os.path.exists(content):
+                try:
+                    os.remove(content)
+                except Exception as e:
+                    print(f"[clipy-menu] error deleting image: {e}", file=sys.stderr)
+            
+        c.execute('''
+            DELETE FROM clipboard_history
+            WHERE id IN (
+                SELECT id FROM clipboard_history
+                WHERE pinned = 0
+                ORDER BY created_at DESC
+                LIMIT -1 OFFSET 50
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[clipy-menu] db error saving text: {exc}", file=sys.stderr)
+
 
 def format_age(seconds):
     if seconds < 60:
@@ -560,7 +643,7 @@ class ClipyWindow(Gtk.Window):
 
         # Footer shortcuts
         footer = Gtk.Label(
-            label="↑↓ Nav  Enter Copy  P Pin  S Snippet  M Merge  Del Remove  Esc Close"
+            label="↑↓ Nav  Enter Copy  P Pin  S Snippet  M Merge  T Toggle Tab  Del Remove  Esc Close"
         )
         footer.get_style_context().add_class("footer-label")
         footer.set_margin_top(12)
@@ -648,8 +731,12 @@ class ClipyWindow(Gtk.Window):
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         ctx = card.get_style_context()
         ctx.add_class("clip-card")
+        
         if idx == self.focused_idx:
             ctx.add_class("focused")
+            
+        if idx in self.selected_indices:
+            ctx.add_class("selected")
 
         # Top row: badge + age
         top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -657,6 +744,11 @@ class ClipyWindow(Gtk.Window):
         badge_text = TYPE_BADGES.get(item["type"], "📝 Text")
         if item["pinned"]:
             badge_text = "📌 Pinned"
+        
+        # Override badge text for custom snippet label if present
+        if item["type"] == "snippet" and item.get("label"):
+            badge_text = f"🔖 {item['label']}"
+            
         badge = Gtk.Label(label=badge_text)
         badge.get_style_context().add_class("clip-badge")
         if item["pinned"]:
@@ -670,17 +762,55 @@ class ClipyWindow(Gtk.Window):
 
         card.pack_start(top_row, False, False, 0)
 
-        # Content preview
-        preview = truncate(item["content"])
-        content_label = Gtk.Label(label=preview)
-        content_label.set_halign(Gtk.Align.START)
-        content_label.set_line_wrap(True)
-        content_label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        content_label.set_max_width_chars(60)
-        content_label.set_lines(3)
-        content_label.set_ellipsize(Pango.EllipsizeMode.END)
-        content_label.get_style_context().add_class("clip-content")
-        card.pack_start(content_label, False, False, 0)
+        # Content preview or Image Thumbnail
+        if item["type"] == "image":
+            # Load and display a scaled aspect-ratio thumbnail of the screenshot
+            img_widget = Gtk.Image()
+            try:
+                if os.path.exists(item["content"]):
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file(item["content"])
+                    w = pixbuf.get_width()
+                    h = pixbuf.get_height()
+                    scale = min(400.0 / w, 100.0 / h, 1.0)
+                    new_w = max(1, int(w * scale))
+                    new_h = max(1, int(h * scale))
+                    scaled_pixbuf = pixbuf.scale_simple(new_w, new_h, GdkPixbuf.InterpType.BILINEAR)
+                    img_widget.set_from_pixbuf(scaled_pixbuf)
+                else:
+                    img_widget.set_from_icon_name("image-missing", Gtk.IconSize.DIALOG)
+            except Exception:
+                img_widget.set_from_icon_name("image-missing", Gtk.IconSize.DIALOG)
+            
+            img_widget.set_halign(Gtk.Align.START)
+            card.pack_start(img_widget, False, False, 0)
+        else:
+            # Standard text preview
+            preview = truncate(item["content"])
+            content_label = Gtk.Label(label=preview)
+            content_label.set_halign(Gtk.Align.START)
+            content_label.set_line_wrap(True)
+            content_label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            content_label.set_max_width_chars(60)
+            content_label.set_lines(3)
+            content_label.set_ellipsize(Pango.EllipsizeMode.END)
+            content_label.get_style_context().add_class("clip-content")
+
+            # Check if it contains a hex color to show color swatch
+            color_hex = detect_hex_color(item["content"])
+            if color_hex:
+                color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                
+                swatch = Gtk.EventBox()
+                swatch.get_style_context().add_class("color-swatch")
+                rgba = Gdk.RGBA()
+                if rgba.parse(color_hex):
+                    swatch.override_background_color(Gtk.StateFlags.NORMAL, rgba)
+                
+                color_row.pack_start(swatch, False, False, 0)
+                color_row.pack_start(content_label, True, True, 0)
+                card.pack_start(color_row, False, False, 0)
+            else:
+                card.pack_start(content_label, False, False, 0)
 
         # Expiry progress bar (only for unpinned items)
         if not item["pinned"] and item["expires_in"] is not None and item["retention_s"] > 0:
@@ -727,12 +857,13 @@ class ClipyWindow(Gtk.Window):
     def _action_copy(self):
         if 0 <= self.focused_idx < len(self.filtered_items):
             item = self.filtered_items[self.focused_idx]
-            copy_to_clipboard(item["content"])
+            copy_to_clipboard(item)
             self.destroy()
             Gtk.main_quit()
-            # After GTK loop ends, paste into previous window (handled in main)
 
     def _action_pin(self):
+        if self.current_view == "snippets":
+            return
         if 0 <= self.focused_idx < len(self.filtered_items):
             item = self.filtered_items[self.focused_idx]
             toggle_pin(item["id"], item["pinned"])
@@ -741,11 +872,65 @@ class ClipyWindow(Gtk.Window):
     def _action_delete(self):
         if 0 <= self.focused_idx < len(self.filtered_items):
             item = self.filtered_items[self.focused_idx]
-            delete_item(item["id"])
+            if self.current_view == "snippets":
+                delete_snippet(item["id"])
+            else:
+                delete_item(item["id"])
             self._load_items()
             if self.focused_idx >= len(self.filtered_items):
                 self.focused_idx = max(0, len(self.filtered_items) - 1)
             self._update_focus()
+            self._refresh_stats()
+
+    def _action_save_snippet(self):
+        if 0 <= self.focused_idx < len(self.filtered_items):
+            item = self.filtered_items[self.focused_idx]
+            if item["type"] == "image":
+                return
+            
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                flags=Gtk.DialogFlags.MODAL,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.OK_CANCEL,
+                text="Save as Snippet"
+            )
+            dialog.set_default_size(300, -1)
+            
+            content_area = dialog.get_content_area()
+            
+            desc = Gtk.Label(label="Enter a label for this snippet:")
+            desc.set_halign(Gtk.Align.START)
+            content_area.pack_start(desc, False, False, 6)
+            
+            entry = Gtk.Entry()
+            # Suggest a label based on first 30 chars of the content
+            suggested = item["content"].strip().replace("\n", " ")[:30]
+            entry.set_text(suggested)
+            entry.set_activates_default(True)
+            content_area.pack_start(entry, False, False, 6)
+            
+            dialog.show_all()
+            dialog.set_default_response(Gtk.ResponseType.OK)
+            
+            response = dialog.run()
+            label_text = entry.get_text().strip()
+            dialog.destroy()
+            
+            if response == Gtk.ResponseType.OK and label_text:
+                save_snippet(label_text, item["content"])
+                self._refresh_stats()
+
+    def _toggle_selection(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            item = self.filtered_items[idx]
+            if item["type"] == "image":
+                return  # Images cannot be merged
+            if idx in self.selected_indices:
+                self.selected_indices.remove(idx)
+            else:
+                self.selected_indices.add(idx)
+            self._render_cards()
 
     # ---- Event handlers ----
 
@@ -758,27 +943,28 @@ class ClipyWindow(Gtk.Window):
         self._apply_filter()
 
     def _on_card_click(self, widget, event, idx):
-        """Handle mouse click on a card — copy and close."""
-        self.focused_idx = idx
-        self._update_focus()
-        self._action_copy()
+        if self.merge_mode:
+            self._toggle_selection(idx)
+        else:
+            self.focused_idx = idx
+            self._update_focus()
+            self._action_copy()
         return True
 
     def _on_search_key(self, widget, event):
-        """Handle keys while search entry is focused."""
         key = Gdk.keyval_name(event.keyval)
         n = len(self.filtered_items)
 
-        # Arrow Down: move focus to the first card
         if key == "Down" and n > 0:
             self.focused_idx = 0
             self._update_focus()
-            # Move focus away from search to the window itself
             self.list_box.grab_focus()
             return True
 
-        # Enter while search is focused: copy the first visible item
         if key == "Return" and self.focused_idx >= 0:
+            if self.merge_mode:
+                # Fall through to let the main key_press handle the merge action
+                return False
             self._action_copy()
             return True
 
@@ -790,8 +976,6 @@ class ClipyWindow(Gtk.Window):
         return False
 
     def _on_key_press(self, widget, event):
-        """Handle keys at the window level (when search does NOT have focus)."""
-        # If search has focus, let _on_search_key handle it
         if self.search_entry.has_focus():
             return False
 
@@ -811,10 +995,57 @@ class ClipyWindow(Gtk.Window):
             self._update_focus()
             return True
         elif key == "Return":
-            self._action_copy()
+            if self.merge_mode:
+                if self.selected_indices:
+                    # Merge selected text clips in index order
+                    sorted_indices = sorted(list(self.selected_indices))
+                    selected_texts = [self.filtered_items[i]["content"] for i in sorted_indices]
+                    merged_text = "\n".join(selected_texts)
+                    merged_item = {"type": "text", "content": merged_text}
+                    copy_to_clipboard(merged_item)
+                    
+                    content_type = classify_content(merged_text)
+                    save_text_clip(merged_text, content_type)
+                    
+                    self.merge_mode = False
+                    self.selected_indices.clear()
+                    self.mode_label.set_text("")
+                    self._load_items()
+                    
+                    new_idx = 0
+                    for idx, item in enumerate(self.filtered_items):
+                        if item["content"] == merged_text:
+                            new_idx = idx
+                            break
+                    self.focused_idx = new_idx
+                    self._update_focus()
+                    self._refresh_stats()
+                else:
+                    self.merge_mode = False
+                    self.mode_label.set_text("")
+                    self._render_cards()
+            else:
+                self._action_copy()
             return True
         elif key in ("p", "P"):
             self._action_pin()
+            return True
+        elif key in ("s", "S"):
+            self._action_save_snippet()
+            return True
+        elif key in ("m", "M"):
+            if self.current_view != "snippets":
+                self.merge_mode = not self.merge_mode
+                self.selected_indices.clear()
+                self.mode_label.set_text("[Merge Mode] Select cards, Enter to merge" if self.merge_mode else "")
+                self._render_cards()
+            return True
+        elif key in ("t", "T"):
+            new_view = "snippets" if self.current_view == "history" else "history"
+            self._switch_view(new_view)
+            return True
+        elif key == "space" and self.merge_mode:
+            self._toggle_selection(self.focused_idx)
             return True
         elif key == "Delete":
             self._action_delete()

@@ -53,16 +53,17 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 ${SCRIPT_DIR}/clipy-daemon.py
+ExecStart=/usr/bin/python3 -u ${SCRIPT_DIR}/clipy-daemon.py
 Restart=always
 RestartSec=5
-Environment=DISPLAY=:0
+Environment=DISPLAY=:0 WAYLAND_DISPLAY=wayland-0
 
 [Install]
 WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY || true
 systemctl --user enable clipy.service
 systemctl --user restart clipy.service
 echo -e "${G}  ✓ clipy.service enabled and started${N}"

@@ -1,25 +1,24 @@
-# 📋 Clipy — Clipboard History Manager for Linux
+# 📋 Clipy — Advanced Clipboard History & Snippet Manager for Linux
 
-A lightweight, native clipboard history manager for Ubuntu and other GNOME-based Linux distributions. Inspired by Windows' `Win+V` clipboard and Android's Gboard clipboard — built entirely with Python and GTK.
+A lightweight, native, and feature-rich clipboard history manager for Ubuntu and other GNOME-based Linux distributions (supporting both Wayland and X11). Built entirely with Python and GTK 3 (`PyGObject`).
 
-**Zero browser. Zero Electron. Zero bloat.** Just a fast, native popup that lives in your system tray.
+**Zero web frameworks. Zero Electron. Zero bloat.** Just a beautiful, premium, glassmorphic popup that stays out of your way and boosts your productivity.
 
 ---
 
-## ✨ Features
+## ✨ Advanced Features
 
 | Feature | Description |
-|---------|-------------|
-| 📋 **Auto-capture** | Silently monitors your clipboard in the background. Every `Ctrl+C` is saved automatically. |
-| 🔍 **Instant search** | Type to filter through your clipboard history in real time. |
-| ⌨️ **Keyboard-first** | Full keyboard navigation — arrows, Enter to paste, P to pin, Del to remove, Esc to close. |
-| 📌 **Pin important clips** | Pinned items never expire and stay at the top of your history. |
-| ⏱️ **Auto-expiry** | Unpinned clips are automatically cleared after 4 hours (configurable). |
-| 🏷️ **Content type badges** | Each clip is tagged as 🔗 URL, 📧 Email, 💻 Code, 🔢 Number, or 📝 Text. |
-| 🔒 **Privacy-first** | Passwords, API tokens, and credit card numbers are automatically detected and **never stored**. |
-| 📋➡️📄 **Paste-and-close** | Select an item → it's pasted directly into your previous app. Just like Windows. *(requires `xdotool`)* |
-| 🪶 **Ultra-lightweight** | ~10 MB RAM. No browser, no Electron, no web server. Pure Python + GTK. |
-| 🚀 **Auto-start** | Installs as a systemd user service. Starts on login, restarts on crash. |
+|:---|:---|
+| 📋 **Gdk-Native Polling** | Replaces old polling methods with native `Gdk.Clipboard` and event-driven updates. Highly reliable on GNOME/Wayland. |
+| 📸 **Image & Screenshot Capture** | Silently monitors clipboard image targets (like printscreens). Compares pixel data via **MD5 hashing** to avoid duplicates, saves screenshots to disk, and displays them as responsive aspect-ratio thumbnails. |
+| 📝 **Multi-Select Merge Mode** | Toggle Merge Mode (`M`), select multiple text clips (`Space` or click), and press `Enter` to concatenate them with newline separators. Instantly copies the merged clip to the clipboard, saves it, and highlights it. |
+| 🏷️ **Saved Snippets View** | Press `S` to save any clipboard item permanently. Assign a custom label using a native GTK prompt dialog. Toggle between History and Snippets using `T` or clicking tabs. |
+| 📊 **Analytics Dashboard** | Live dashboard in the header bar showing today's copies, total history count, saved snippets count, and type distributions. |
+| 🎨 **Hex Color Previews** | Automatically detects HEX colors (`#HEX` codes) in text clips and displays a live CSS-rendered color swatch beside the clip. |
+| ⏱️ **Automatic GC & Pruning** | Unpinned items automatically expire after 4 hours (configurable). Old image files on disk are automatically cleaned up when items are deleted, pruned, or expired. |
+| 🔒 **Privacy-First** | Credit cards, API keys (e.g. `sk-`, `ghp_`, `Bearer`), and sensitive passwords are automatically classified and skipped. Database and screenshots are stored locally. |
+| 📋➡️📄 **Paste-and-Close** | Select any item and press Enter to copy it and automatically paste it directly into your previous active application window *(requires `xdotool`)*. |
 
 ---
 
@@ -27,59 +26,64 @@ A lightweight, native clipboard history manager for Ubuntu and other GNOME-based
 
 ```
 ┌────────────────────────────────────┐
-│  You copy text (Ctrl+C) anywhere  │
+│  You copy text/image (Ctrl+C)      │
 └──────────────┬─────────────────────┘
                │
                ▼
 ┌────────────────────────────────────┐
-│  clipy-daemon (background)        │
-│  • Detects new clipboard content  │
-│  • Filters sensitive data         │
-│  • Classifies content type        │
-│  • Saves to local SQLite DB       │
+│  clipy-daemon (systemd service)    │
+│  • Detects text/image clipboard     │
+│  • Performs MD5 pixel hashing      │
+│  • Classifies content & saves DB   │
+│  • Cleans up image files on prune  │
 └────────────────────────────────────┘
                │
                │  Press Super+Shift+V
                ▼
 ┌────────────────────────────────────┐
-│  Native GTK popup appears         │
-│  • Search your history            │
-│  • Navigate with arrow keys       │
-│  • Press Enter → auto-paste       │
+│  Premium Glassmorphic GTK Popup    │
+│  • View, filter, and search        │
+│  • Toggle Merge Mode (M)           │
+│  • Toggle Snippets Tab (T)         │
+│  • Enter twice to copy and paste   │
 └────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation & Setup
 
 ### Prerequisites
 
-- **Ubuntu 22.04+** (or any GNOME-based Linux distro)
+- **Ubuntu 22.04+** (or any GNOME/Wayland or GNOME/X11 distro)
 - **Python 3.10+** (pre-installed on Ubuntu)
-- **PyGObject** (pre-installed on Ubuntu)
-- **xsel** — clipboard interface
+- **python3-gi** (PyGObject bindings for GTK/Gdk)
+- **xdotool** (optional: enables paste-and-close feature)
 
 ```bash
-# Install required dependency
-sudo apt install xsel
-
-# Optional: enables paste-and-close (auto-paste into previous window)
-sudo apt install xdotool
+# Install required system dependencies
+sudo apt update
+sudo apt install python3-gi xdotool
 ```
 
 ### Install Clipy
 
-```bash
-git clone https://github.com/YOUR_USERNAME/clipy.git
-cd clipy
-chmod +x install.sh
-./install.sh
-```
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/clipy.git
+   cd clipy
+   ```
+2. Make the installer script executable and run it:
+   ```bash
+   chmod +x install.sh
+   ./install.sh
+   ```
 
-That's it. The daemon starts immediately and will auto-start on every login.
+The installer script configures `clipy` to run as a **systemd user service**, automatically importing the necessary environment variables (`DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`) to ensure smooth systemd service clipboard access under Wayland sessions.
 
 ### Uninstall
+
+To uninstall the systemd service and application shortcuts:
 
 ```bash
 systemctl --user stop clipy.service
@@ -93,81 +97,41 @@ systemctl --user daemon-reload
 
 ## ⌨️ Keyboard Shortcuts
 
-### Global (GNOME)
+### Global (GNOME System Shortcut)
 
 | Shortcut | Action |
-|----------|--------|
-| `Super+Shift+V` | Open Clipy popup |
+|:---|:---|
+| `Super+Shift+V` | Toggle Clipy popup |
 
-### Inside Clipy
+### Inside Clipy Popup
 
 | Key | Action |
-|-----|--------|
-| `↑` / `↓` | Navigate between clips |
-| `Enter` | Copy selected clip & paste into previous window |
-| `P` | Pin / unpin the selected clip |
-| `Delete` | Remove the selected clip |
-| `/` | Focus the search box |
-| `Esc` | Close without action |
+|:---|:---|
+| `↑` / `↓` | Navigate list items / Focus search |
+| `Enter` | **Normal**: Copy & paste selected item to previous window. <br>**Merge Mode**: Concatenate selected items and focus the new clip. |
+| `Space` / Click | **Merge Mode**: Toggle selection of the highlighted card. |
+| `P` / `p` | Toggle pinning of history clips (pinned items never expire). |
+| `S` / `s` | Save focused clip permanently as a Snippet with a custom label. |
+| `M` / `m` | Toggle **Merge Mode** (for text clips). |
+| `T` / `t` | Toggle between **History** and **Saved Snippets** tabs. |
+| `/` | Focus search bar. |
+| `Delete` | Remove the selected item from history/snippets. |
+| `Esc` | Close popup without action. |
 
 ---
 
 ## ⚙️ Configuration
 
-The default retention period is **4 hours**. To change it, update the database directly:
+The default retention period is **4 hours** and the history size is capped at **50 items** (oldest unpinned items are automatically dropped).
+
+To customize the retention duration, update the SQLite settings table directly:
 
 ```bash
-sqlite3 ~/path/to/clipy/clipy.db "UPDATE settings SET value = '12' WHERE key = 'retention_hours';"
+sqlite3 ~/.config/clipy/clipy.db "UPDATE settings SET value = '12' WHERE key = 'retention_hours';"
 ```
-
-The maximum number of stored items is **50** (oldest unpinned items are dropped when the limit is reached).
-
----
-
-## 🔒 Privacy & Security
-
-Clipy is designed with privacy in mind:
-
-- **All data is stored locally** in a SQLite file — nothing is sent over the network.
-- **Sensitive content is never stored**: credit card numbers, API tokens (`sk-`, `ghp_`, `Bearer`), and password patterns are automatically detected and silently skipped.
-- **Auto-expiry** ensures old clips don't linger.
-- **Pinned items** are explicitly opted-in by the user.
-
----
-
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Daemon | Python 3 (stdlib only) |
-| Database | SQLite 3 |
-| GUI | GTK 3 via PyGObject |
-| Styling | GTK CSS (glassmorphic dark theme) |
-| Clipboard | `xsel` (X11/Xwayland) |
-| Auto-paste | `xdotool` (optional) |
-| Service | systemd user service |
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to open issues or submit pull requests.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ---
 
 ## 📄 License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- Inspired by **Windows Win+V** clipboard history and **Android Gboard** clipboard
-- Built for the Ubuntu community 🐧
