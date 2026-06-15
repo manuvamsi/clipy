@@ -2,7 +2,7 @@
 Name=Clipy
 Comment=Lightweight clipboard history manager for Linux
 Exec=/home/vyomans-shuttle/clipboard/clipy-menu.py
-Icon=edit-paste
+Icon=/home/vyomans-shuttle/clipboard/clipy_icon.png
 Terminal=false
 Type=Application
 Categories=Utility;GTK;

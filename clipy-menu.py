@@ -16,6 +16,7 @@ Keyboard-driven:
 """
 
 import os
+import re
 import sys
 import shutil
 import sqlite3
@@ -56,12 +57,20 @@ TYPE_BADGES = {
 }
 
 # ---------------------------------------------------------------------------
+# Color detection for hex color preview
+# ---------------------------------------------------------------------------
+HEX_COLOR_RE = re.compile(r'#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b')
+
+def detect_hex_color(text):
+    """Return the first hex color found in text, or None."""
+    m = HEX_COLOR_RE.search(text.strip())
+    return m.group(0) if m else None
 # GTK CSS — glassmorphic / Fluent dark theme
 # ---------------------------------------------------------------------------
 CSS = b"""
 /* ---- window ---- */
 window {
-    background-color: rgba(12, 10, 24, 0.94);
+    background-color: #0d0b1a;
 }
 
 /* ---- search entry ---- */
@@ -83,20 +92,20 @@ entry:focus {
 
 /* ---- card (each history item) ---- */
 .clip-card {
-    background-color: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background-color: #1a1730;
+    border: 1px solid #2a2545;
     border-radius: 12px;
     padding: 12px 14px;
     transition: 200ms ease;
 }
 .clip-card:hover {
-    background-color: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.14);
+    background-color: #211e38;
+    border-color: #3a3560;
 }
 .clip-card.focused {
-    background-color: rgba(139, 92, 246, 0.08);
-    border-color: rgba(139, 92, 246, 0.45);
-    box-shadow: 0 0 12px rgba(139, 92, 246, 0.20);
+    background-color: #1e1840;
+    border-color: #7c5cdb;
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.30);
 }
 
 /* ---- text inside cards ---- */
@@ -184,6 +193,60 @@ scrolledwindow scrollbar {
     color: #6b7280;
     font-size: 14px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
+}
+
+/* ---- color swatch ---- */
+.color-swatch {
+    border-radius: 4px;
+    min-width: 18px;
+    min-height: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+}
+
+/* ---- merge mode selected card ---- */
+.clip-card.selected {
+    background-color: #1a2535;
+    border-color: #10b981;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
+}
+
+/* ---- stats bar ---- */
+.stats-bar {
+    color: #6b7280;
+    font-size: 10px;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    padding: 4px 0;
+}
+.stats-bar-highlight {
+    color: #a78bfa;
+    font-size: 10px;
+}
+
+/* ---- mode indicator ---- */
+.mode-label {
+    color: #10b981;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+}
+
+/* ---- filter tabs ---- */
+.filter-btn {
+    background-color: transparent;
+    border: none;
+    color: #6b7280;
+    font-size: 11px;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    padding: 4px 10px;
+    border-radius: 8px;
+}
+.filter-btn:hover {
+    background-color: #1a1730;
+    color: #e5e7eb;
+}
+.filter-btn.active-filter {
+    background-color: #1e1840;
+    color: #c084fc;
 }
 """
 
@@ -274,6 +337,62 @@ def paste_to_previous_window():
     except Exception as exc:
         print(f"[clipy-menu] paste error: {exc}", file=sys.stderr)
 
+
+# ---------------------------------------------------------------------------
+# Snippet helpers
+# ---------------------------------------------------------------------------
+
+def save_snippet(label, content):
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("INSERT INTO snippets (label, content) VALUES (?, ?)", (label, content))
+    conn.commit()
+    conn.close()
+
+
+def fetch_snippets():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, label, content, created_at FROM snippets ORDER BY created_at DESC")
+        rows = c.fetchall()
+        conn.close()
+        return [{"id": r[0], "label": r[1], "content": r[2], "created_at": r[3],
+                 "pinned": True, "type": "snippet", "age_s": 0,
+                 "expires_in": None, "retention_s": 0} for r in rows]
+    except Exception:
+        return []
+
+
+def delete_snippet(snippet_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("DELETE FROM snippets WHERE id = ?", (snippet_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Stats helper
+# ---------------------------------------------------------------------------
+
+def get_clipboard_stats():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM clipboard_history")
+        total = c.fetchone()[0]
+        c.execute("""SELECT COUNT(*) FROM clipboard_history
+                     WHERE created_at >= datetime('now', '-1 day')""")
+        today = c.fetchone()[0]
+        c.execute("""SELECT content_type, COUNT(*) FROM clipboard_history
+                     GROUP BY content_type ORDER BY COUNT(*) DESC""")
+        by_type = {r[0]: r[1] for r in c.fetchall()}
+        c.execute("SELECT COUNT(*) FROM snippets")
+        snippets = c.fetchone()[0]
+        conn.close()
+        return {"total": total, "today": today, "by_type": by_type, "snippets": snippets}
+    except Exception:
+        return {"total": 0, "today": 0, "by_type": {}, "snippets": 0}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -314,12 +433,16 @@ class ClipyWindow(Gtk.Window):
         self.set_keep_above(True)
         self.set_skip_taskbar_hint(True)
 
-        # Make the window background transparent for the CSS to take effect
-        screen = self.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual:
-            self.set_visual(visual)
-        self.set_app_paintable(True)
+        # Set custom window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipy_icon.png")
+        if os.path.exists(icon_path):
+            try:
+                self.set_icon_from_file(icon_path)
+            except Exception:
+                pass
+
+        # Solid opaque background — no true transparency
+        # (glassmorphic effect is achieved via card styling against the dark bg)
 
         # Close on focus-out
         self.connect("focus-out-event", self._on_focus_out)
@@ -330,6 +453,9 @@ class ClipyWindow(Gtk.Window):
         self.filtered_items = []
         self.focused_idx = -1
         self.card_widgets = []
+        self.merge_mode = False
+        self.selected_indices = set()
+        self.current_view = "history"  # "history" or "snippets"
 
         # Layout
         self._build_ui()
@@ -347,7 +473,7 @@ class ClipyWindow(Gtk.Window):
 
         # Header
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        header.set_margin_bottom(14)
+        header.set_margin_bottom(6)
 
         logo_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         title = Gtk.Label(label="📋  Clipy")
@@ -369,6 +495,36 @@ class ClipyWindow(Gtk.Window):
 
         root.pack_start(header, False, False, 0)
 
+        # Stats bar
+        self.stats_label = Gtk.Label(label="")
+        self.stats_label.set_halign(Gtk.Align.START)
+        self.stats_label.get_style_context().add_class("stats-bar")
+        self.stats_label.set_margin_bottom(8)
+        root.pack_start(self.stats_label, False, False, 0)
+        self._refresh_stats()
+
+        # Filter tabs (History | Snippets) + mode indicator
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        filter_row.set_margin_bottom(10)
+
+        self.btn_history = Gtk.Button(label="History")
+        self.btn_history.get_style_context().add_class("filter-btn")
+        self.btn_history.get_style_context().add_class("active-filter")
+        self.btn_history.connect("clicked", lambda _: self._switch_view("history"))
+        filter_row.pack_start(self.btn_history, False, False, 0)
+
+        self.btn_snippets = Gtk.Button(label="Snippets")
+        self.btn_snippets.get_style_context().add_class("filter-btn")
+        self.btn_snippets.connect("clicked", lambda _: self._switch_view("snippets"))
+        filter_row.pack_start(self.btn_snippets, False, False, 0)
+
+        self.mode_label = Gtk.Label(label="")
+        self.mode_label.get_style_context().add_class("mode-label")
+        self.mode_label.set_halign(Gtk.Align.END)
+        filter_row.pack_end(self.mode_label, False, False, 0)
+
+        root.pack_start(filter_row, False, False, 0)
+
         # Search
         self.search_entry = Gtk.Entry()
         self.search_entry.set_placeholder_text("Search clipboard history…")
@@ -383,12 +539,13 @@ class ClipyWindow(Gtk.Window):
         scroll.set_vexpand(True)
 
         self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.list_box.set_can_focus(True)
         scroll.add(self.list_box)
         root.pack_start(scroll, True, True, 0)
 
         # Footer shortcuts
         footer = Gtk.Label(
-            label="↑↓ Navigate   Enter Copy   P Pin   Del Remove   Esc Close"
+            label="↑↓ Nav  Enter Copy  P Pin  S Snippet  M Merge  Del Remove  Esc Close"
         )
         footer.get_style_context().add_class("footer-label")
         footer.set_margin_top(12)
@@ -396,8 +553,35 @@ class ClipyWindow(Gtk.Window):
 
     # ---- Data loading ----
 
+    def _refresh_stats(self):
+        stats = get_clipboard_stats()
+        type_parts = "  ".join(f"{TYPE_BADGES.get(k,'📝')[0]} {v}" for k, v in stats["by_type"].items())
+        self.stats_label.set_text(
+            f"Today: {stats['today']} copies  •  Total: {stats['total']}  •  "
+            f"Snippets: {stats['snippets']}  {type_parts}"
+        )
+
+    def _switch_view(self, view):
+        self.current_view = view
+        self.merge_mode = False
+        self.selected_indices.clear()
+        self.mode_label.set_text("")
+        # Update tab styling
+        h_ctx = self.btn_history.get_style_context()
+        s_ctx = self.btn_snippets.get_style_context()
+        if view == "history":
+            h_ctx.add_class("active-filter")
+            s_ctx.remove_class("active-filter")
+        else:
+            s_ctx.add_class("active-filter")
+            h_ctx.remove_class("active-filter")
+        self._load_items()
+
     def _load_items(self):
-        self.all_items = fetch_history()
+        if self.current_view == "snippets":
+            self.all_items = fetch_snippets()
+        else:
+            self.all_items = fetch_history()
         self._apply_filter()
 
     def _apply_filter(self):
@@ -406,6 +590,7 @@ class ClipyWindow(Gtk.Window):
             self.filtered_items = [
                 it for it in self.all_items
                 if query in it["content"].lower()
+                or (it.get("label") or "").lower().find(query) >= 0
             ]
         else:
             self.filtered_items = list(self.all_items)
@@ -434,8 +619,12 @@ class ClipyWindow(Gtk.Window):
             return
 
         for idx, item in enumerate(self.filtered_items):
+            event_box = Gtk.EventBox()
             card = self._make_card(item, idx)
-            self.list_box.pack_start(card, False, False, 0)
+            event_box.add(card)
+            # Click to copy
+            event_box.connect("button-press-event", self._on_card_click, idx)
+            self.list_box.pack_start(event_box, False, False, 0)
             self.card_widgets.append(card)
 
         self.list_box.show_all()
@@ -553,22 +742,41 @@ class ClipyWindow(Gtk.Window):
     def _on_search_changed(self, entry):
         self._apply_filter()
 
+    def _on_card_click(self, widget, event, idx):
+        """Handle mouse click on a card — copy and close."""
+        self.focused_idx = idx
+        self._update_focus()
+        self._action_copy()
+        return True
+
     def _on_search_key(self, widget, event):
+        """Handle keys while search entry is focused."""
         key = Gdk.keyval_name(event.keyval)
-        if key == "Down" and self.filtered_items:
+        n = len(self.filtered_items)
+
+        # Arrow Down: move focus to the first card
+        if key == "Down" and n > 0:
             self.focused_idx = 0
             self._update_focus()
-            # Remove focus from search so global keys work
-            self.set_focus(None)
+            # Move focus away from search to the window itself
+            self.list_box.grab_focus()
             return True
+
+        # Enter while search is focused: copy the first visible item
+        if key == "Return" and self.focused_idx >= 0:
+            self._action_copy()
+            return True
+
         if key == "Escape":
             self.destroy()
             Gtk.main_quit()
             return True
+
         return False
 
     def _on_key_press(self, widget, event):
-        # If search has focus, let it handle most keys
+        """Handle keys at the window level (when search does NOT have focus)."""
+        # If search has focus, let _on_search_key handle it
         if self.search_entry.has_focus():
             return False
 
@@ -581,7 +789,7 @@ class ClipyWindow(Gtk.Window):
             return True
         elif key == "Up":
             if self.focused_idx <= 0:
-                self.focused_idx = -1
+                self.focused_idx = 0 if n > 0 else -1
                 self.search_entry.grab_focus()
             else:
                 self.focused_idx -= 1
