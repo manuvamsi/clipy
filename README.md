@@ -132,6 +132,19 @@ sqlite3 ~/.config/clipy/clipy.db "UPDATE settings SET value = '12' WHERE key = '
 
 ---
 
+## 👨‍💻 Play & Contribute (Developer Invite)
+
+Welcome! If you are a developer looking to build on top of Clipy or customize it for your workflow, feel free to fork this project, experiment with the codebase, and submit Pull Requests! 
+
+Here are a few exciting features/ideas on our roadmap that you can build and add to the system:
+- **📊 Graphical Statistics**: Integrate a visual chart dashboard showing clipboard analytics over the last 30 days.
+- **☁️ Cloud Sync & Backups**: Add secure synchronization for saved snippets across devices (e.g. via Nextcloud or GitHub Gists).
+- **⚙️ Hotkey Configuration UI**: Create an interactive GUI dialog to easily change the default database paths, hotkeys, and retention limits.
+- **🔍 Advanced Search Operators**: Add support for regex searches, sorting options, and tags-based filters.
+- **🖼️ Snippet Categories**: Group saved snippets into folders or categories (e.g. `Code Templates`, `Frequently Used Emails`, `URLs`).
+
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
