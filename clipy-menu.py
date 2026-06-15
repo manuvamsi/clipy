@@ -59,12 +59,28 @@ TYPE_BADGES = {
 # ---------------------------------------------------------------------------
 # Color detection for hex color preview
 # ---------------------------------------------------------------------------
-HEX_COLOR_RE = re.compile(r'#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b')
+HEX_WITH_HASH = re.compile(r'#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b')
+HEX_WITHOUT_HASH_6 = re.compile(r'^[0-9a-fA-F]{6}$')
+HEX_WITHOUT_HASH_3 = re.compile(r'^[0-9a-fA-F]{3}$')
 
 def detect_hex_color(text):
-    """Return the first hex color found in text, or None."""
-    m = HEX_COLOR_RE.search(text.strip())
-    return m.group(0) if m else None
+    """Return the hex color found in text (with leading '#'), or None."""
+    stripped = text.strip()
+    
+    # 1. Try matching with hash first (e.g., #7c5cdb)
+    m = HEX_WITH_HASH.search(stripped)
+    if m:
+        return m.group(0)
+    
+    # 2. Try matching if the entire string is just a 6-digit hex color (e.g., F7E49B)
+    if HEX_WITHOUT_HASH_6.match(stripped):
+        return "#" + stripped
+        
+    # 3. Try matching if the entire string is a 3-digit hex color containing at least one digit (e.g., 333)
+    if HEX_WITHOUT_HASH_3.match(stripped) and any(c.isdigit() for c in stripped):
+        return "#" + stripped
+        
+    return None
 # GTK CSS — glassmorphic / Fluent dark theme
 # ---------------------------------------------------------------------------
 CSS = b"""
