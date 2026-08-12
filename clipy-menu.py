@@ -15,6 +15,7 @@ Keyboard-driven:
     Esc    close
 """
 
+import json
 import os
 import re
 import sys
@@ -22,6 +23,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from urllib.parse import urlparse
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -32,6 +34,7 @@ from gi.repository import Gtk, Gdk, GLib, Pango, GdkPixbuf
 # Paths & config
 # ---------------------------------------------------------------------------
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipy.db")
+MAX_HISTORY = 50
 HAS_XDOTOOL = shutil.which("xdotool") is not None
 PREVIOUS_WINDOW_ID = None
 
@@ -49,11 +52,12 @@ if HAS_XDOTOOL:
 # Type badge map
 # ---------------------------------------------------------------------------
 TYPE_BADGES = {
-    "url":    "🔗 URL",
-    "email":  "📧 Email",
-    "code":   "💻 Code",
-    "number": "🔢 Number",
-    "text":   "📝 Text",
+    "url":    "URL",
+    "email":  "EMAIL",
+    "code":   "CODE",
+    "number": "NUMBER",
+    "text":   "TEXT",
+    "image":  "IMAGE",
 }
 
 # ---------------------------------------------------------------------------
@@ -81,68 +85,134 @@ def detect_hex_color(text):
         return "#" + stripped
         
     return None
+
+
+# ---------------------------------------------------------------------------
 # GTK CSS — glassmorphic / Fluent dark theme
 # ---------------------------------------------------------------------------
 CSS = b"""
 /* ---- window ---- */
 window {
-    background-color: #0d0b1a;
+    background-color: #000000;
+}
+.titlebar-label {
+    color: #8a8a8a;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+}
+.traffic-light {
+    min-width: 13px;
+    min-height: 13px;
+    border-radius: 999px;
+    border: 1px solid;
+    padding: 0;
+    box-shadow: inset 0 -1px 1px rgba(0, 0, 0, 0.2);
+}
+.traffic-light label {
+    color: #ffffff;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 0;
+}
+.traffic-close {
+    background-color: #ff5f57;
+    border-color: rgba(0, 0, 0, 0.35);
+}
+.traffic-close:hover {
+    background-color: #ff867d;
+}
+.traffic-minimize {
+    background-color: #febc2e;
+}
+.traffic-minimize:hover {
+    background-color: #ffd565;
+}
+.traffic-maximize {
+    background-color: #28c840;
+}
+.traffic-maximize:hover {
+    background-color: #5ede74;
 }
 
 /* ---- search entry ---- */
 entry {
-    background-color: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 10px;
-    color: #f3f4f6;
+    color: #ffffff;
     padding: 10px 14px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
     font-size: 14px;
-    caret-color: #a78bfa;
+    caret-color: #ffffff;
     min-height: 20px;
 }
 entry:focus {
-    border-color: rgba(139, 92, 246, 0.50);
-    box-shadow: 0 0 8px rgba(139, 92, 246, 0.25);
+    border-color: rgba(255, 255, 255, 0.80);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25),
+                0 0 12px rgba(255, 255, 255, 0.12);
 }
 
 /* ---- card (each history item) ---- */
 .clip-card {
-    background-color: #1a1730;
-    border: 1px solid #2a2545;
-    border-radius: 12px;
+    background-color: #121212;
+    border: 1px solid #262626;
+    border-radius: 10px;
     padding: 12px 14px;
-    transition: 200ms ease;
 }
 .clip-card:hover {
-    background-color: #211e38;
-    border-color: #3a3560;
+    background-color: #1a1a1a;
+    border-color: #3a3a3a;
 }
 .clip-card.focused {
-    background-color: #1e1840;
-    border-color: #7c5cdb;
-    box-shadow: 0 0 12px rgba(139, 92, 246, 0.30);
+    background-color: #1f1f1f;
+    border-color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35),
+                0 4px 18px rgba(0, 0, 0, 0.55),
+                0 0 14px rgba(255, 255, 255, 0.10);
+}
+.clip-card.selected {
+    background-color: #1a1a1a;
+    border-color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.40),
+                0 0 10px rgba(255, 255, 255, 0.10);
 }
 
 /* ---- text inside cards ---- */
 .clip-content {
-    color: #e5e7eb;
+    color: #e5e5e5;
     font-family: 'Outfit', 'Cantarell', sans-serif;
     font-size: 13px;
 }
 .clip-meta {
-    color: #9ca3af;
+    color: #8a8a8a;
     font-size: 11px;
 }
+.clip-domain {
+    color: #a3a3a3;
+    font-size: 10px;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    padding: 1px 2px;
+}
+
+/* ---- type badges (monochrome) ---- */
 .clip-badge {
     font-size: 10px;
+    font-weight: 500;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
     padding: 2px 8px;
-    border-radius: 6px;
-    background-color: rgba(255, 255, 255, 0.06);
-    color: #c084fc;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #bdbdbd;
+    letter-spacing: 0.3px;
 }
 .clip-badge-pinned {
-    color: #fbbf24;
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.45);
+    background-color: rgba(255, 255, 255, 0.10);
+    font-weight: 700;
 }
 
 /* ---- header / title ---- */
@@ -153,94 +223,94 @@ entry:focus {
     font-family: 'Outfit', 'Cantarell', sans-serif;
 }
 .header-subtitle {
-    color: #9ca3af;
+    color: #8a8a8a;
     font-size: 11px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
 }
 .header-count {
-    color: #9ca3af;
+    color: #bdbdbd;
     font-size: 12px;
     padding: 3px 10px;
-    border-radius: 12px;
+    border-radius: 6px;
     background-color: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid #2a2a2a;
 }
 
 /* ---- expiry progress bar ---- */
+progressbar {
+    border: 0;
+    outline: 0;
+    background-color: transparent;
+}
 progressbar trough {
-    background-color: rgba(255, 255, 255, 0.04);
-    border-radius: 2px;
-    min-height: 3px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 3px;
+    min-height: 4px;
 }
 progressbar progress {
+    border: 0;
     border-radius: 2px;
-    min-height: 3px;
-    background-color: #8b5cf6;
+    min-height: 2px;
+    background-color: #ffffff;
 }
-progressbar.warning progress {
-    background-color: #f59e0b;
-}
+progressbar.warning progress,
 progressbar.danger progress {
-    background-color: #ef4444;
+    background-color: #9b9b9b;
 }
 
 /* ---- scrollbar ---- */
+scrolledwindow scrollbar {
+    background-color: transparent;
+}
 scrolledwindow scrollbar slider {
-    background-color: rgba(255, 255, 255, 0.10);
+    background-color: rgba(255, 255, 255, 0.18);
     border-radius: 10px;
     min-width: 6px;
 }
 scrolledwindow scrollbar slider:hover {
-    background-color: rgba(255, 255, 255, 0.20);
-}
-scrolledwindow scrollbar {
-    background-color: transparent;
+    background-color: rgba(255, 255, 255, 0.32);
 }
 
 /* ---- footer ---- */
 .footer-label {
-    color: #6b7280;
+    color: #6b6b6b;
     font-size: 10px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
 }
 
 /* ---- empty state ---- */
 .empty-label {
-    color: #6b7280;
+    color: #6b6b6b;
     font-size: 14px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
 }
 
 /* ---- color swatch ---- */
 .color-swatch {
-    border-radius: 4px;
+    border-radius: 3px;
     min-width: 18px;
     min-height: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.20);
-}
-
-/* ---- merge mode selected card ---- */
-.clip-card.selected {
-    background-color: #1a2535;
-    border-color: #10b981;
-    box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
 }
 
 /* ---- stats bar ---- */
 .stats-bar {
-    color: #6b7280;
+    color: #6b6b6b;
     font-size: 10px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
     padding: 4px 0;
 }
 .stats-bar-highlight {
-    color: #a78bfa;
+    color: #ffffff;
     font-size: 10px;
+    font-weight: 600;
 }
 
 /* ---- mode indicator ---- */
 .mode-label {
-    color: #10b981;
+    color: #ffffff;
     font-size: 11px;
     font-weight: 700;
     font-family: 'Outfit', 'Cantarell', sans-serif;
@@ -249,20 +319,56 @@ scrolledwindow scrollbar {
 /* ---- filter tabs ---- */
 .filter-btn {
     background-color: transparent;
-    border: none;
-    color: #6b7280;
+    border: 1px solid transparent;
+    color: #8a8a8a;
     font-size: 11px;
     font-family: 'Outfit', 'Cantarell', sans-serif;
     padding: 4px 10px;
-    border-radius: 8px;
+    border-radius: 6px;
 }
 .filter-btn:hover {
-    background-color: #1a1730;
-    color: #e5e7eb;
+    background-color: rgba(255, 255, 255, 0.06);
+    color: #e5e5e5;
+    border-color: rgba(255, 255, 255, 0.25);
 }
 .filter-btn.active-filter {
-    background-color: #1e1840;
-    color: #c084fc;
+    background-color: rgba(255, 255, 255, 0.10);
+    border-color: #ffffff;
+    color: #ffffff;
+    font-weight: 700;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.20);
+}
+
+/* ---- card action bar & buttons ---- */
+.card-action-bar {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+.card-action-btn {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    color: #a0a0a0;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    font-size: 10px;
+    padding: 2px 7px;
+}
+.card-action-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.35);
+    color: #ffffff;
+}
+.card-action-btn.active-action {
+    background-color: rgba(255, 255, 255, 0.20);
+    border-color: #ffffff;
+    color: #ffffff;
+    font-weight: 700;
+}
+.card-action-btn.danger-action:hover {
+    background-color: rgba(255, 85, 85, 0.25);
+    border-color: #ff5555;
+    color: #ff8888;
 }
 """
 
@@ -423,15 +529,25 @@ def get_clipboard_stats():
         c.execute("""SELECT COUNT(*) FROM clipboard_history
                      WHERE created_at >= datetime('now', '-1 day')""")
         today = c.fetchone()[0]
-        c.execute("""SELECT content_type, COUNT(*) FROM clipboard_history
-                     GROUP BY content_type ORDER BY COUNT(*) DESC""")
-        by_type = {r[0]: r[1] for r in c.fetchall()}
+        c.execute("SELECT COUNT(*) FROM clipboard_history WHERE content_type = 'image'")
+        images = c.fetchone()[0]
+        c.execute("""SELECT MIN(strftime('%s','now') - strftime('%s', created_at))
+                     FROM clipboard_history""")
+        row = c.fetchone()
+        oldest_age = row[0] if row and row[0] is not None else None
         c.execute("SELECT COUNT(*) FROM snippets")
         snippets = c.fetchone()[0]
         conn.close()
-        return {"total": total, "today": today, "by_type": by_type, "snippets": snippets}
+        try:
+            db_size = os.path.getsize(DB_FILE)
+        except OSError:
+            db_size = 0
+        return {"total": total, "today": today, "images": images,
+                "snippets": snippets, "oldest_age": oldest_age,
+                "db_size": db_size}
     except Exception:
-        return {"total": 0, "today": 0, "by_type": {}, "snippets": 0}
+        return {"total": 0, "today": 0, "images": 0, "snippets": 0,
+                "oldest_age": None, "db_size": 0}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -471,8 +587,8 @@ def save_text_clip(text, content_type):
             SELECT content, content_type FROM clipboard_history
             WHERE pinned = 0
             ORDER BY created_at DESC
-            LIMIT -1 OFFSET 50
-        ''')
+            LIMIT -1 OFFSET ?
+        ''', (MAX_HISTORY,))
         to_delete = c.fetchall()
         for content, ctype in to_delete:
             if ctype == 'image' and content and os.path.exists(content):
@@ -487,9 +603,9 @@ def save_text_clip(text, content_type):
                 SELECT id FROM clipboard_history
                 WHERE pinned = 0
                 ORDER BY created_at DESC
-                LIMIT -1 OFFSET 50
+                LIMIT -1 OFFSET ?
             )
-        ''')
+        ''', (MAX_HISTORY,))
         conn.commit()
         conn.close()
     except Exception as exc:
@@ -526,11 +642,11 @@ class ClipyWindow(Gtk.Window):
         super().__init__(title="Clipy")
         self.set_default_size(460, 560)
         self.set_decorated(False)
-        self.set_resizable(False)
+        self.set_resizable(True)
+        self.set_size_request(440, 500)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         self.set_keep_above(True)
-        self.set_skip_taskbar_hint(True)
 
         # Set custom window icon
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipy_icon.png")
@@ -555,6 +671,8 @@ class ClipyWindow(Gtk.Window):
         self.merge_mode = False
         self.selected_indices = set()
         self.current_view = "history"  # "history" or "snippets"
+        self.pasted = False
+        self._dialog_open = False
 
         # Layout
         self._build_ui()
@@ -564,11 +682,35 @@ class ClipyWindow(Gtk.Window):
 
     def _build_ui(self):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        root.set_margin_top(20)
+        root.set_margin_top(10)
         root.set_margin_bottom(16)
         root.set_margin_start(20)
         root.set_margin_end(20)
         self.add(root)
+
+        # Mac-style titlebar: traffic lights + draggable area
+        titlebar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        titlebar.set_margin_bottom(10)
+
+        self.btn_close = self._make_traffic_light("close", "#ff5f57", "#e0443e", "✕")
+        self.btn_close.connect("clicked", self._on_titlebar_close)
+        self.btn_minimize = self._make_traffic_light("minimize", "#febc2e", "#d99a1b", "−")
+        self.btn_minimize.connect("clicked", self._on_titlebar_minimize)
+        self.btn_maximize = self._make_traffic_light("maximize", "#28c840", "#1fa839", "+")
+        self.btn_maximize.connect("clicked", self._on_titlebar_maximize)
+
+        titlebar.pack_start(self.btn_close, False, False, 0)
+        titlebar.pack_start(self.btn_minimize, False, False, 0)
+        titlebar.pack_start(self.btn_maximize, False, False, 0)
+
+        titlebar_label = Gtk.Label(label="Clipy")
+        titlebar_label.get_style_context().add_class("titlebar-label")
+        titlebar.pack_start(titlebar_label, True, True, 0)
+
+        # Window titlebar drag (macOS-style toolbar dragging)
+        titlebar.connect("button-press-event", self._on_titlebar_press)
+
+        root.pack_start(titlebar, False, False, 0)
 
         # Header
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -624,11 +766,13 @@ class ClipyWindow(Gtk.Window):
         self.btn_history = Gtk.Button(label="History")
         self.btn_history.get_style_context().add_class("filter-btn")
         self.btn_history.get_style_context().add_class("active-filter")
+        self.btn_history.set_can_focus(False)
         self.btn_history.connect("clicked", lambda _: self._switch_view("history"))
         filter_row.pack_start(self.btn_history, False, False, 0)
 
         self.btn_snippets = Gtk.Button(label="Snippets")
         self.btn_snippets.get_style_context().add_class("filter-btn")
+        self.btn_snippets.set_can_focus(False)
         self.btn_snippets.connect("clicked", lambda _: self._switch_view("snippets"))
         filter_row.pack_start(self.btn_snippets, False, False, 0)
 
@@ -637,11 +781,40 @@ class ClipyWindow(Gtk.Window):
         self.mode_label.set_halign(Gtk.Align.END)
         filter_row.pack_end(self.mode_label, False, False, 0)
 
+        self.btn_merge_now = Gtk.Button(label="⚡ Merge Now")
+        self.btn_merge_now.get_style_context().add_class("filter-btn")
+        self.btn_merge_now.get_style_context().add_class("active-filter")
+        self.btn_merge_now.set_can_focus(False)
+        self.btn_merge_now.set_no_show_all(True)
+        self.btn_merge_now.set_visible(False)
+        self.btn_merge_now.connect("clicked", lambda _: self._execute_merge())
+        filter_row.pack_end(self.btn_merge_now, False, False, 0)
+
         root.pack_start(filter_row, False, False, 0)
 
-        # Search
+        # Type filter chips (All | URL | Email | Code | Number | Image)
+        self.type_filter = None  # None = all types
+        self.type_order = [None, "url", "email", "code", "number", "image"]
+        self.type_buttons = {}
+        type_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        type_row.set_margin_bottom(10)
+        for label_text, t in [("All", None), ("URL", "url"), ("EMAIL", "email"),
+                              ("CODE", "code"), ("NUMBER", "number"), ("IMAGE", "image")]:
+            btn = Gtk.Button(label=label_text)
+            btn.get_style_context().add_class("filter-btn")
+            btn.set_can_focus(False)
+            btn.connect("clicked", lambda _, t=t: self._set_type_filter(t))
+            type_row.pack_start(btn, False, False, 0)
+            self.type_buttons[t] = btn
+        self.type_buttons[None].get_style_context().add_class("active-filter")
+        root.pack_start(type_row, False, False, 0)
+
+        # Search entry with clear icon
         self.search_entry = Gtk.Entry()
-        self.search_entry.set_placeholder_text("Search clipboard history…")
+        self.search_entry.set_placeholder_text("Search clipboard history… (e.g. type:url, pinned:yes)")
+        self.search_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "edit-clear-symbolic")
+        self.search_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, "Clear search filter")
+        self.search_entry.connect("icon-press", lambda entry, icon_pos, event: entry.set_text(""))
         self.search_entry.connect("changed", self._on_search_changed)
         self.search_entry.connect("key-press-event", self._on_search_key)
         self.search_entry.set_margin_bottom(12)
@@ -659,7 +832,7 @@ class ClipyWindow(Gtk.Window):
 
         # Footer shortcuts
         footer = Gtk.Label(
-            label="↑↓ Nav  Enter Copy  P Pin  S Snippet  M Merge  T Toggle Tab  Del Remove  Esc Close"
+            label="↑↓ Cards  ←→ Tabs  Enter Copy  O Open URL  P Pin  S Snippet  M Merge  T Tab  E Export  I Import  Del Remove  Esc Close"
         )
         footer.get_style_context().add_class("footer-label")
         footer.set_margin_top(12)
@@ -667,13 +840,59 @@ class ClipyWindow(Gtk.Window):
 
     # ---- Data loading ----
 
+    def _make_traffic_light(self, kind, base, hover, glyph):
+        btn = Gtk.Button(label=glyph)
+        btn.set_size_request(13, 13)
+        ctx = btn.get_style_context()
+        ctx.add_class("traffic-light")
+        ctx.add_class(f"traffic-{kind}")
+        # Per-button dynamic colors (GTK CSS can't do variables)
+        provider = Gtk.CssProvider()
+        css = (f".traffic-{kind} {{ background-color: {base}; border-color: rgba(0,0,0,0.35); }} "
+               f".traffic-{kind}:hover {{ background-color: {hover}; }}").encode()
+        provider.load_from_data(css)
+        ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        btn.set_can_focus(False)
+        return btn
+
+    def _on_titlebar_press(self, widget, event):
+        if event.button == 1:
+            self.begin_move_drag(event.button, event.x_root, event.y_root, event.time)
+        return True
+
+    def _on_titlebar_close(self, _btn):
+        self.destroy()
+        Gtk.main_quit()
+
+    def _on_titlebar_minimize(self, _btn):
+        self.iconify()
+
+    def _on_titlebar_maximize(self, _btn):
+        if self.is_maximized():
+            self.unmaximize()
+        else:
+            self.maximize()
+
     def _refresh_stats(self):
         stats = get_clipboard_stats()
-        type_parts = "  ".join(f"{TYPE_BADGES.get(k,'📝')[0]} {v}" for k, v in stats["by_type"].items())
+        db_mb = stats["db_size"] / (1024 * 1024)
+        db_txt = f"{db_mb:.1f}MB" if db_mb >= 1 else f"{stats['db_size'] / 1024:.0f}KB"
+        oldest_txt = format_age(stats["oldest_age"]) if stats["oldest_age"] is not None else "—"
         self.stats_label.set_text(
-            f"Today: {stats['today']} copies  •  Total: {stats['total']}  •  "
-            f"Snippets: {stats['snippets']}  {type_parts}"
+            f"Today: {stats['today']}  •  Clips: {stats['total']}  •  "
+            f"Snippets: {stats['snippets']}  •  Images: {stats['images']}  •  "
+            f"DB: {db_txt}  •  Oldest: {oldest_txt}"
         )
+
+    def _set_type_filter(self, t):
+        self.type_filter = t
+        for btn_type, btn in self.type_buttons.items():
+            ctx = btn.get_style_context()
+            if btn_type == t:
+                ctx.add_class("active-filter")
+            else:
+                ctx.remove_class("active-filter")
+        self._apply_filter()
 
     def _switch_view(self, view):
         self.current_view = view
@@ -700,15 +919,40 @@ class ClipyWindow(Gtk.Window):
 
     def _apply_filter(self):
         query = self.search_entry.get_text().strip().lower()
+        text_query = query
+        type_op = None
+        pinned_op = None
         if query:
-            self.filtered_items = [
-                it for it in self.all_items
-                if query in it["content"].lower()
-                or (it.get("label") or "").lower().find(query) >= 0
-            ]
-        else:
-            self.filtered_items = list(self.all_items)
+            tokens = query.split()
+            remain = []
+            for tok in tokens:
+                if tok.startswith("type:"):
+                    t = tok[5:]
+                    if t in ("url", "email", "code", "number", "image", "text", "snippet"):
+                        type_op = t
+                    continue
+                if tok.startswith("pinned:"):
+                    v = tok[7:]
+                    pinned_op = v in ("yes", "1", "true")
+                    continue
+                remain.append(tok)
+            text_query = " ".join(remain)
 
+        items = list(self.all_items)
+        if type_op:
+            items = [it for it in items if it.get("type") == type_op]
+        elif self.type_filter:
+            items = [it for it in items if it.get("type") == self.type_filter]
+        if pinned_op is not None:
+            items = [it for it in items if it.get("pinned") is pinned_op]
+        if text_query:
+            items = [
+                it for it in items
+                if text_query in it["content"].lower()
+                or (it.get("label") or "").lower().find(text_query) >= 0
+            ]
+
+        self.filtered_items = items
         n = len(self.filtered_items)
         self.count_label.set_text(f"{n} item{'s' if n != 1 else ''}")
         self.focused_idx = 0 if n > 0 else -1
@@ -723,7 +967,7 @@ class ClipyWindow(Gtk.Window):
         self.card_widgets.clear()
 
         if not self.filtered_items:
-            empty = Gtk.Label(label="📭  No clipboard history yet.\nCopy something to get started!")
+            empty = Gtk.Label(label="No clipboard history yet.\nCopy something to get started!")
             empty.get_style_context().add_class("empty-label")
             empty.set_justify(Gtk.Justification.CENTER)
             empty.set_valign(Gtk.Align.CENTER)
@@ -736,6 +980,8 @@ class ClipyWindow(Gtk.Window):
             event_box = Gtk.EventBox()
             card = self._make_card(item, idx)
             event_box.add(card)
+            # Hover focuses the card (mouse acts like keyboard focus)
+            event_box.connect("enter-notify-event", self._on_card_hover, idx)
             # Click to copy
             event_box.connect("button-press-event", self._on_card_click, idx)
             self.list_box.pack_start(event_box, False, False, 0)
@@ -757,21 +1003,42 @@ class ClipyWindow(Gtk.Window):
         # Top row: badge + age
         top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
-        badge_text = TYPE_BADGES.get(item["type"], "📝 Text")
+        badge_text = TYPE_BADGES.get(item["type"], "TEXT")
         if item["pinned"]:
-            badge_text = "📌 Pinned"
+            badge_text = "PINNED"
         
         # Override badge text for custom snippet label if present
         if item["type"] == "snippet" and item.get("label"):
-            badge_text = f"🔖 {item['label']}"
+            badge_text = f"{item['label']}".upper()
             
         badge = Gtk.Label(label=badge_text)
         badge.get_style_context().add_class("clip-badge")
+        badge.get_style_context().add_class(f"badge-{item['type']}")
         if item["pinned"]:
             badge.get_style_context().add_class("clip-badge-pinned")
         top_row.pack_start(badge, False, False, 0)
 
-        age_label = Gtk.Label(label=format_age(item["age_s"]))
+        # Smart URL label: show the domain next to the badge
+        domain_label = None
+        if item["type"] == "url":
+            try:
+                host = urlparse(item["content"].strip()).netloc
+                if host:
+                    domain_label = Gtk.Label(label=host)
+                    domain_label.get_style_context().add_class("clip-domain")
+                    top_row.pack_start(domain_label, False, False, 0)
+            except Exception:
+                pass
+
+        meta_parts = []
+        if item["type"] not in ("image", "snippet"):
+            t_str = item["content"].strip()
+            w_cnt = len(t_str.split())
+            c_cnt = len(t_str)
+            meta_parts.append(f"{w_cnt}w · {c_cnt}c")
+        meta_parts.append(format_age(item["age_s"]))
+
+        age_label = Gtk.Label(label="  •  ".join(meta_parts))
         age_label.get_style_context().add_class("clip-meta")
         age_label.set_halign(Gtk.Align.END)
         top_row.pack_end(age_label, False, False, 0)
@@ -846,6 +1113,80 @@ class ClipyWindow(Gtk.Window):
                 pbar.get_style_context().add_class("warning")
             card.pack_start(pbar, False, False, 0)
 
+        # Action bar with clickable option buttons for each card (Copy, Pin, Save, Open, Merge, Uppercase, Delete)
+        action_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        action_bar.get_style_context().add_class("card-action-bar")
+
+        btn_copy = Gtk.Button(label="📋 Copy")
+        btn_copy.set_can_focus(False)
+        btn_copy.get_style_context().add_class("card-action-btn")
+        btn_copy.set_tooltip_text("Copy & paste into previous app")
+        btn_copy.connect("clicked", lambda _, i=idx: self._on_card_action_copy(i))
+        action_bar.pack_start(btn_copy, False, False, 0)
+
+        pin_lbl = "📌 Unpin" if item["pinned"] else "📌 Pin"
+        btn_pin = Gtk.Button(label=pin_lbl)
+        btn_pin.set_can_focus(False)
+        btn_pin.get_style_context().add_class("card-action-btn")
+        if item["pinned"]:
+            btn_pin.get_style_context().add_class("active-action")
+        btn_pin.set_tooltip_text("Toggle pinning (pinned clips don't expire)")
+        btn_pin.connect("clicked", lambda _, i=idx: self._on_card_action_pin(i))
+        action_bar.pack_start(btn_pin, False, False, 0)
+
+        if item["type"] != "snippet":
+            btn_snip = Gtk.Button(label="🔖 Save")
+            btn_snip.set_can_focus(False)
+            btn_snip.get_style_context().add_class("card-action-btn")
+            btn_snip.set_tooltip_text("Save clip permanently as a labeled Snippet")
+            btn_snip.connect("clicked", lambda _, i=idx: self._on_card_action_snippet(i))
+            action_bar.pack_start(btn_snip, False, False, 0)
+
+        if item["type"] == "url":
+            btn_open = Gtk.Button(label="🌐 Open")
+            btn_open.set_can_focus(False)
+            btn_open.get_style_context().add_class("card-action-btn")
+            btn_open.set_tooltip_text("Open URL directly in default browser")
+            btn_open.connect("clicked", lambda _, i=idx: self._on_card_action_open(i))
+            action_bar.pack_start(btn_open, False, False, 0)
+
+        if item["type"] not in ("image", "snippet"):
+            m_lbl = "☑️ Selected" if idx in self.selected_indices else "➕ Merge"
+            btn_merge = Gtk.Button(label=m_lbl)
+            btn_merge.set_can_focus(False)
+            btn_merge.get_style_context().add_class("card-action-btn")
+            if idx in self.selected_indices:
+                btn_merge.get_style_context().add_class("active-action")
+            btn_merge.set_tooltip_text("Select clip for multi-select concatenate merge")
+            btn_merge.connect("clicked", lambda _, i=idx: self._on_card_action_merge(i))
+            action_bar.pack_start(btn_merge, False, False, 0)
+
+            btn_upper = Gtk.Button(label="🔠 AAA")
+            btn_upper.set_can_focus(False)
+            btn_upper.get_style_context().add_class("card-action-btn")
+            btn_upper.set_tooltip_text("Copy text converted to ALL UPPERCASE")
+            btn_upper.connect("clicked", lambda _, i=idx: self._on_card_action_uppercase(i))
+            action_bar.pack_start(btn_upper, False, False, 0)
+
+        btn_del = Gtk.Button(label="🗑️")
+        btn_del.set_can_focus(False)
+        btn_del.get_style_context().add_class("card-action-btn")
+        btn_del.get_style_context().add_class("danger-action")
+        btn_del.set_tooltip_text("Delete item from database")
+        btn_del.connect("clicked", lambda _, i=idx: self._on_card_action_delete(i))
+        action_bar.pack_end(btn_del, False, False, 0)
+
+        card.pack_start(action_bar, False, False, 0)
+
+        # Hover tooltip: show the full clip content
+        if item["type"] == "image":
+            tip = item["content"]
+        else:
+            tip = item["content"]
+        if len(tip) > 1500:
+            tip = tip[:1500] + "\n… (content truncated)"
+        card.set_tooltip_text(tip)
+
         return card
 
     # ---- Focus management ----
@@ -861,15 +1202,18 @@ class ClipyWindow(Gtk.Window):
         # Scroll focused card into view
         if 0 <= self.focused_idx < len(self.card_widgets):
             card = self.card_widgets[self.focused_idx]
-            alloc = card.get_allocation()
             parent_scroll = self.list_box.get_parent()  # ScrolledWindow
             if parent_scroll:
                 adj = parent_scroll.get_vadjustment()
                 if adj:
                     page = adj.get_page_size()
                     val = adj.get_value()
-                    card_top = alloc.y
-                    card_bot = alloc.y + alloc.height
+                    card_h = card.get_allocated_height()
+                    # Translate into list_box space (cards are wrapped in EventBoxes)
+                    x, card_top = card.translate_coordinates(self.list_box, 0, 0)
+                    if x is None:
+                        return
+                    card_bot = card_top + card_h
                     if card_bot > val + page:
                         adj.set_value(card_bot - page)
                     elif card_top < val:
@@ -881,8 +1225,20 @@ class ClipyWindow(Gtk.Window):
         if 0 <= self.focused_idx < len(self.filtered_items):
             item = self.filtered_items[self.focused_idx]
             copy_to_clipboard(item)
-            self.destroy()
-            Gtk.main_quit()
+            self.pasted = True
+            # Keep the UI open — only the user closes it (Esc)
+            txt = "✓ Copied"
+            if item.get("type") == "url":
+                try:
+                    txt += f" — {urlparse(item['content'].strip()).netloc}"
+                except Exception:
+                    pass
+            self.mode_label.set_text(txt if not self.merge_mode else "[Merge Mode] " + txt)
+            GLib.timeout_add(1400, lambda: self._clear_mode_label())
+            # Shift focus to the next item (tab-like progression), wrapping at the end
+            if len(self.filtered_items) > 1:
+                self.focused_idx = (self.focused_idx + 1) % len(self.filtered_items)
+                self._update_focus()
 
     def _action_pin(self):
         if self.current_view == "snippets":
@@ -919,6 +1275,7 @@ class ClipyWindow(Gtk.Window):
                 text="Save as Snippet"
             )
             dialog.set_default_size(300, -1)
+            self._dialog_open = True
             
             content_area = dialog.get_content_area()
             
@@ -939,10 +1296,164 @@ class ClipyWindow(Gtk.Window):
             response = dialog.run()
             label_text = entry.get_text().strip()
             dialog.destroy()
+            self._dialog_open = False
             
             if response == Gtk.ResponseType.OK and label_text:
                 save_snippet(label_text, item["content"])
                 self._refresh_stats()
+
+    def _action_open_url(self):
+        if not (0 <= self.focused_idx < len(self.filtered_items)):
+            return
+        item = self.filtered_items[self.focused_idx]
+        if item.get("type") != "url":
+            self.mode_label.set_text("Only URL clips can be opened")
+            GLib.timeout_add(1800, lambda: self.mode_label.set_text(""))
+            return
+        url = item["content"].strip()
+        try:
+            subprocess.Popen(["xdg-open", url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            print(f"[clipy-menu] open url error: {exc}", file=sys.stderr)
+            return
+        self.destroy()
+        Gtk.main_quit()
+
+    def _ask_merge_separator(self):
+        dialog = Gtk.Dialog(
+            title="Custom Merge",
+            transient_for=self,
+            flags=Gtk.DialogFlags.MODAL,
+        )
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                           "Merge", Gtk.ResponseType.OK)
+        dialog.set_default_size(320, -1)
+        self._dialog_open = True
+
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        desc = Gtk.Label(label="Join selected clips with:")
+        desc.set_halign(Gtk.Align.START)
+        content.pack_start(desc, False, False, 0)
+
+        combo = Gtk.ComboBoxText()
+        for label, _sep in [("New line", "\n"), ("Comma", ", "),
+                            ("Space", " "), ("Tab", "\t"), ("Semicolon", "; ")]:
+            combo.append_text(label)
+        combo.set_active(0)
+        content.pack_start(combo, False, False, 0)
+
+        custom = Gtk.Entry()
+        custom.set_placeholder_text("Or type a custom separator…")
+        content.pack_start(custom, False, False, 0)
+
+        dialog.show_all()
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        response = dialog.run()
+        separator = None
+        if response == Gtk.ResponseType.OK:
+            custom_text = custom.get_text()
+            if custom_text.strip():
+                separator = custom_text
+            else:
+                separator = ["\n", ", ", " ", "\t", "; "][combo.get_active()]
+        dialog.destroy()
+        self._dialog_open = False
+        return separator
+
+    def _export_backup(self):
+        chooser = Gtk.FileChooserDialog(
+            title="Export Clipy Backup",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Export", Gtk.ResponseType.OK)
+        chooser.set_current_name(f"clipy-backup-{time.strftime('%Y%m%d-%H%M%S')}.json")
+        self._dialog_open = True
+        resp = chooser.run()
+        path = chooser.get_filename() if resp == Gtk.ResponseType.OK else None
+        chooser.destroy()
+        self._dialog_open = False
+        if not path:
+            return
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            clips = conn.execute(
+                "SELECT content, created_at, pinned, content_type FROM clipboard_history"
+            ).fetchall()
+            snips = conn.execute(
+                "SELECT label, content, created_at FROM snippets"
+            ).fetchall()
+            conn.close()
+            data = {
+                "app": "clipy",
+                "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "clips": [{"content": c[0], "created_at": c[1],
+                           "pinned": bool(c[2]), "type": c[3]} for c in clips],
+                "snippets": [{"label": s[0], "content": s[1],
+                              "created_at": s[2]} for s in snips],
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.mode_label.set_text("Backup exported")
+        except Exception as exc:
+            print(f"[clipy-menu] export error: {exc}", file=sys.stderr)
+            self.mode_label.set_text("Export failed")
+        GLib.timeout_add(1800, lambda: self.mode_label.set_text(""))
+        self._refresh_stats()
+
+    def _import_backup(self):
+        chooser = Gtk.FileChooserDialog(
+            title="Import Clipy Backup",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Import", Gtk.ResponseType.OK)
+        self._dialog_open = True
+        resp = chooser.run()
+        path = chooser.get_filename() if resp == Gtk.ResponseType.OK else None
+        chooser.destroy()
+        self._dialog_open = False
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            conn = sqlite3.connect(DB_FILE)
+            imported_clips = imported_snips = 0
+            for c in data.get("clips", []):
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO clipboard_history
+                       (content, created_at, pinned, content_type)
+                       VALUES (?, ?, ?, ?)""",
+                    (c.get("content", ""), c.get("created_at"),
+                     1 if c.get("pinned") else 0, c.get("type", "text")))
+                imported_clips += cur.rowcount
+            for s in data.get("snippets", []):
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO snippets (label, content, created_at)
+                       VALUES (?, ?, ?)""",
+                    (s.get("label", ""), s.get("content", ""), s.get("created_at")))
+                imported_snips += cur.rowcount
+            conn.commit()
+            conn.close()
+            self.mode_label.set_text(
+                f"Imported {imported_clips} clip(s), {imported_snips} snippet(s)"
+            )
+        except Exception as exc:
+            print(f"[clipy-menu] import error: {exc}", file=sys.stderr)
+            self.mode_label.set_text("Import failed")
+        GLib.timeout_add(1800, lambda: self.mode_label.set_text(""))
+        self._load_items()
+        self._refresh_stats()
 
     def _toggle_selection(self, idx):
         if 0 <= idx < len(self.filtered_items):
@@ -953,19 +1464,205 @@ class ClipyWindow(Gtk.Window):
                 self.selected_indices.remove(idx)
             else:
                 self.selected_indices.add(idx)
+            
+            if self.selected_indices:
+                self.btn_merge_now.set_label(f"⚡ Merge ({len(self.selected_indices)})")
+                self.btn_merge_now.set_visible(True)
+            else:
+                self.btn_merge_now.set_visible(False)
+
             self._render_cards()
+
+    def _execute_merge(self):
+        if not self.selected_indices:
+            self.mode_label.set_text("[Merge Mode] Select 1+ clips first")
+            return
+
+        separator = "\n"
+        if len(self.selected_indices) > 1:
+            sep = self._ask_merge_separator()
+            if sep is None:
+                return  # user cancelled separator dialog
+
+            separator = sep
+
+        sorted_indices = sorted(list(self.selected_indices))
+        selected_texts = [self.filtered_items[i]["content"] for i in sorted_indices if i < len(self.filtered_items)]
+        if not selected_texts:
+            return
+
+        merged_text = separator.join(selected_texts)
+        merged_item = {"type": "text", "content": merged_text}
+        copy_to_clipboard(merged_item)
+
+        content_type = classify_content(merged_text)
+        save_text_clip(merged_text, content_type)
+
+        self.merge_mode = False
+        self.selected_indices.clear()
+        if hasattr(self, "btn_merge_now"):
+            self.btn_merge_now.set_visible(False)
+        self.mode_label.set_text("✓ Merged & Copied to Clipboard")
+        GLib.timeout_add(2000, lambda: self._clear_mode_label())
+
+        # Reload history items so the new merged card appears at the top
+        self._load_items()
+        self._refresh_stats()
+
+        # Focus the newly created merged clip
+        new_idx = 0
+        for idx, item in enumerate(self.filtered_items):
+            if item["content"] == merged_text:
+                new_idx = idx
+                break
+
+        self.focused_idx = new_idx
+        self._update_focus()
 
     # ---- Event handlers ----
 
-    def _on_focus_out(self, widget, event):
-        self.destroy()
-        Gtk.main_quit()
+    def _clear_mode_label(self):
+        if self.merge_mode:
+            self.mode_label.set_text("[Merge Mode] Select cards, Enter to merge")
+        else:
+            self.mode_label.set_text("")
         return False
+
+    def _on_focus_out(self, widget, event):
+        # Keep the window open — do not auto-close on focus loss
+        return True
 
     def _on_search_changed(self, entry):
         self._apply_filter()
 
+    def _on_card_hover(self, widget, event, idx):
+        if self._hover_locked:
+            return False
+        if 0 <= idx < len(self.filtered_items) and idx != self.focused_idx:
+            self.focused_idx = idx
+            self._update_focus()
+        return False
+
+    def _show_card_context_menu(self, event, idx):
+        if not (0 <= idx < len(self.filtered_items)):
+            return
+        item = self.filtered_items[idx]
+        menu = Gtk.Menu()
+
+        item_copy = Gtk.MenuItem(label="📋 Copy & Paste")
+        item_copy.connect("activate", lambda _: self._on_card_action_copy(idx))
+        menu.append(item_copy)
+
+        pin_title = "📌 Unpin Clip" if item["pinned"] else "📌 Pin Clip"
+        item_pin = Gtk.MenuItem(label=pin_title)
+        item_pin.connect("activate", lambda _: self._on_card_action_pin(idx))
+        menu.append(item_pin)
+
+        if item["type"] != "snippet":
+            item_snip = Gtk.MenuItem(label="🔖 Save as Snippet")
+            item_snip.connect("activate", lambda _: self._on_card_action_snippet(idx))
+            menu.append(item_snip)
+
+        if item["type"] == "url":
+            item_open = Gtk.MenuItem(label="🌐 Open in Browser")
+            item_open.connect("activate", lambda _: self._on_card_action_open(idx))
+            menu.append(item_open)
+
+        if item["type"] not in ("image", "snippet"):
+            menu.append(Gtk.SeparatorMenuItem())
+            item_upper = Gtk.MenuItem(label="🔠 Copy as UPPERCASE")
+            item_upper.connect("activate", lambda _: self._on_card_action_uppercase(idx))
+            menu.append(item_upper)
+
+            item_lower = Gtk.MenuItem(label="🔡 Copy as lowercase")
+            item_lower.connect("activate", lambda _: self._on_card_action_lowercase(idx))
+            menu.append(item_lower)
+
+            item_trim = Gtk.MenuItem(label="✂️ Copy Trimmed Text")
+            item_trim.connect("activate", lambda _: self._on_card_action_trim(idx))
+            menu.append(item_trim)
+
+        menu.append(Gtk.SeparatorMenuItem())
+        item_del = Gtk.MenuItem(label="🗑️ Delete Item")
+        item_del.connect("activate", lambda _: self._on_card_action_delete(idx))
+        menu.append(item_del)
+
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def _on_card_action_copy(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            self._update_focus()
+            self._action_copy()
+
+    def _on_card_action_pin(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            self._action_pin()
+
+    def _on_card_action_snippet(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            self._action_save_snippet()
+
+    def _on_card_action_open(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            self._action_open_url()
+
+    def _on_card_action_merge(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            if not self.merge_mode:
+                self.merge_mode = True
+                self.mode_label.set_text("[Merge Mode] Select cards, Enter to merge")
+            self._toggle_selection(idx)
+
+    def _on_card_action_uppercase(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            item = self.filtered_items[idx]
+            if item["type"] != "image":
+                mod_item = dict(item)
+                mod_item["content"] = item["content"].upper()
+                copy_to_clipboard(mod_item)
+                self.pasted = True
+                self.mode_label.set_text("✓ Copied as UPPERCASE")
+                GLib.timeout_add(1400, lambda: self._clear_mode_label())
+
+    def _on_card_action_lowercase(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            item = self.filtered_items[idx]
+            if item["type"] != "image":
+                mod_item = dict(item)
+                mod_item["content"] = item["content"].lower()
+                copy_to_clipboard(mod_item)
+                self.pasted = True
+                self.mode_label.set_text("✓ Copied as lowercase")
+                GLib.timeout_add(1400, lambda: self._clear_mode_label())
+
+    def _on_card_action_trim(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            item = self.filtered_items[idx]
+            if item["type"] != "image":
+                mod_item = dict(item)
+                mod_item["content"] = item["content"].strip()
+                copy_to_clipboard(mod_item)
+                self.pasted = True
+                self.mode_label.set_text("✓ Copied Trimmed Text")
+                GLib.timeout_add(1400, lambda: self._clear_mode_label())
+
+    def _on_card_action_delete(self, idx):
+        if 0 <= idx < len(self.filtered_items):
+            self.focused_idx = idx
+            self._action_delete()
+
     def _on_card_click(self, widget, event, idx):
+        if event.button == 3:  # Right-click context menu
+            self.focused_idx = idx
+            self._update_focus()
+            self._show_card_context_menu(event, idx)
+            return True
         if self.merge_mode:
             self._toggle_selection(idx)
         else:
@@ -974,9 +1671,30 @@ class ClipyWindow(Gtk.Window):
             self._action_copy()
         return True
 
+    def _cycle_type_filter(self, delta: int):
+        if self.current_view != "snippets":
+            cur_i = self.type_order.index(self.type_filter) if self.type_filter in self.type_order else 0
+            next_t = self.type_order[(cur_i + delta) % len(self.type_order)]
+            self._set_type_filter(next_t)
+
     def _on_search_key(self, widget, event):
         key = Gdk.keyval_name(event.keyval)
         n = len(self.filtered_items)
+        has_ctrl_alt = bool(event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK))
+
+        if key in ("Right", "KP_Right"):
+            text = self.search_entry.get_text()
+            pos = self.search_entry.get_position()
+            if not text or pos == len(text) or has_ctrl_alt:
+                self._cycle_type_filter(1)
+                return True
+
+        if key in ("Left", "KP_Left"):
+            text = self.search_entry.get_text()
+            pos = self.search_entry.get_position()
+            if not text or pos == 0 or has_ctrl_alt:
+                self._cycle_type_filter(-1)
+                return True
 
         if key == "Down" and n > 0:
             self.focused_idx = 0
@@ -984,12 +1702,13 @@ class ClipyWindow(Gtk.Window):
             self.list_box.grab_focus()
             return True
 
-        if key == "Return" and self.focused_idx >= 0:
+        if key == "Return":
             if self.merge_mode:
-                # Fall through to let the main key_press handle the merge action
-                return False
-            self._action_copy()
-            return True
+                self._execute_merge()
+                return True
+            elif self.focused_idx >= 0:
+                self._action_copy()
+                return True
 
         if key == "Escape":
             self.destroy()
@@ -1017,41 +1736,29 @@ class ClipyWindow(Gtk.Window):
                 self.focused_idx -= 1
             self._update_focus()
             return True
+        elif key in ("Right", "KP_Right"):
+            self._cycle_type_filter(1)
+            return True
+        elif key in ("Left", "KP_Left"):
+            self._cycle_type_filter(-1)
+            return True
         elif key == "Return":
             if self.merge_mode:
-                if self.selected_indices:
-                    # Merge selected text clips in index order
-                    sorted_indices = sorted(list(self.selected_indices))
-                    selected_texts = [self.filtered_items[i]["content"] for i in sorted_indices]
-                    merged_text = "\n".join(selected_texts)
-                    merged_item = {"type": "text", "content": merged_text}
-                    copy_to_clipboard(merged_item)
-                    
-                    content_type = classify_content(merged_text)
-                    save_text_clip(merged_text, content_type)
-                    
-                    self.merge_mode = False
-                    self.selected_indices.clear()
-                    self.mode_label.set_text("")
-                    self._load_items()
-                    
-                    new_idx = 0
-                    for idx, item in enumerate(self.filtered_items):
-                        if item["content"] == merged_text:
-                            new_idx = idx
-                            break
-                    self.focused_idx = new_idx
-                    self._update_focus()
-                    self._refresh_stats()
-                else:
-                    self.merge_mode = False
-                    self.mode_label.set_text("")
-                    self._render_cards()
+                self._execute_merge()
             else:
                 self._action_copy()
             return True
         elif key in ("p", "P"):
             self._action_pin()
+            return True
+        elif key in ("o", "O"):
+            self._action_open_url()
+            return True
+        elif key in ("e", "E"):
+            self._export_backup()
+            return True
+        elif key in ("i", "I"):
+            self._import_backup()
             return True
         elif key in ("s", "S"):
             self._action_save_snippet()
@@ -1110,8 +1817,9 @@ def main():
 
     Gtk.main()
 
-    # After the GTK loop exits, attempt paste-and-close
-    paste_to_previous_window()
+    # After the GTK loop exits, paste-and-close (only when a copy was made)
+    if win.pasted:
+        paste_to_previous_window()
 
 
 if __name__ == '__main__':

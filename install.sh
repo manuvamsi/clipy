@@ -17,10 +17,10 @@ echo -e "${B}══════════════════════�
 echo -e "\n${B}[1/5] Checking dependencies…${N}"
 
 if ! command -v xsel &>/dev/null; then
-    echo -e "${R}  ✗ xsel not found. Install it:  sudo apt install xsel${N}"
-    exit 1
+    echo -e "${Y}  ⚠ xsel not found — not required (GTK clipboard access is used instead), install for extra compatibility:  sudo apt install xsel${N}"
+else
+    echo -e "${G}  ✓ xsel${N}"
 fi
-echo -e "${G}  ✓ xsel${N}"
 
 if ! python3 -c "import gi" &>/dev/null; then
     echo -e "${R}  ✗ PyGObject (gi) not found. Install it:  sudo apt install python3-gi${N}"
@@ -46,6 +46,15 @@ echo -e "\n${B}[3/5] Installing systemd user service…${N}"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
+# Capture the active session's display env instead of hardcoding :0
+ENV_LINE=""
+for var in DISPLAY WAYLAND_DISPLAY XAUTHORITY; do
+    val="${!var:-}"
+    if [ -n "$val" ]; then
+        ENV_LINE="${ENV_LINE} ${var}=${val}"
+    fi
+done
+
 cat > "${SERVICE_DIR}/clipy.service" <<EOF
 [Unit]
 Description=Clipy Clipboard History Daemon
@@ -56,7 +65,7 @@ Type=simple
 ExecStart=/usr/bin/python3 -u ${SCRIPT_DIR}/clipy-daemon.py
 Restart=always
 RestartSec=5
-Environment=DISPLAY=:0 WAYLAND_DISPLAY=wayland-0
+Environment=${ENV_LINE}
 
 [Install]
 WantedBy=default.target
@@ -72,7 +81,9 @@ echo -e "${G}  ✓ clipy.service enabled and started${N}"
 echo -e "\n${B}[4/5] Installing desktop launcher…${N}"
 APP_DIR="${HOME}/.local/share/applications"
 mkdir -p "$APP_DIR"
-sed "s|Exec=.*|Exec=${SCRIPT_DIR}/clipy-menu.py|" \
+sed \
+    -e "s|Exec=.*|Exec=${SCRIPT_DIR}/clipy-menu.py|" \
+    -e "s|Icon=.*|Icon=${SCRIPT_DIR}/clipy_icon.png|" \
     "${SCRIPT_DIR}/clipy.desktop" > "${APP_DIR}/clipy.desktop"
 chmod +x "${APP_DIR}/clipy.desktop"
 echo -e "${G}  ✓ Clipy added to applications menu${N}"

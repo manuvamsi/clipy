@@ -2,7 +2,7 @@
 """
 Clipy Daemon — Lightweight background clipboard monitor.
 
-Polls the system clipboard every 500ms via xsel, stores unique clips
+Polls the system clipboard every 500ms via GTK (Gdk), stores unique clips
 in a local SQLite database, auto-purges expired entries, and enforces
 a maximum history cap.  Runs as a systemd user service.
 """
@@ -11,10 +11,7 @@ import hashlib
 import os
 import re
 import sys
-import time
 import sqlite3
-import subprocess
-import threading
 
 # Force GDK to X11 to bypass Wayland background isolation
 os.environ["GDK_BACKEND"] = "x11"
@@ -39,8 +36,10 @@ MAX_HISTORY = 50
 # Sensitive-data patterns (never stored)
 # ---------------------------------------------------------------------------
 SENSITIVE_PATTERNS = [
-    # Credit / debit card numbers (13-19 digits, optional separators)
-    re.compile(r'\b(?:\d[ -]*?){13,19}\b'),
+    # Credit / debit card numbers: common issuer prefixes (4, 5, 34/37, 6)
+    # with 13-19 digits and optional single spaces/hyphens as separators.
+    # Restricting the leading digit avoids nuking phone numbers and codes.
+    re.compile(r'\b[3456](?:[ -]?\d){12,18}\b'),
     # Common API tokens / secrets
     re.compile(r'\b(?:sk-|sk_live_|sk_test_|ghp_|gho_|github_pat_|glpat-|xoxb-|xoxp-|AKIA[0-9A-Z]{16})\S+', re.I),
     # Bearer tokens
