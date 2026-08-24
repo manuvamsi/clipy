@@ -81,11 +81,14 @@ def is_sensitive(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def init_db():
-    # Ensure images directory exists
-    os.makedirs(IMAGES_DIR, exist_ok=True)
-    
+    # Ensure images directory exists (screenshots are sensitive too)
+    os.makedirs(IMAGES_DIR, mode=0o700, exist_ok=True)
+    os.chmod(IMAGES_DIR, 0o700)
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # The DB holds everything the user copies — keep it private (0600)
+    os.chmod(DB_FILE, 0o600)
     c.execute('''
         CREATE TABLE IF NOT EXISTS clipboard_history (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -46,18 +46,16 @@ echo -e "\n${B}[3/5] Installing systemd user service…${N}"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
-# Capture the active session's display env instead of hardcoding :0
-ENV_LINE=""
-for var in DISPLAY WAYLAND_DISPLAY XAUTHORITY; do
-    val="${!var:-}"
-    if [ -n "$val" ]; then
-        ENV_LINE="${ENV_LINE} ${var}=${val}"
-    fi
-done
+# Do NOT bake DISPLAY/XAUTHORITY into the unit — Mutter regenerates the
+# Xwayland auth file with a random suffix on every login, so any hardcoded
+# value goes stale and crash-loops the daemon after logout/reboot.
+# The service inherits fresh values from the systemd user manager
+# environment (imported by GNOME each session) instead.
 
 cat > "${SERVICE_DIR}/clipy.service" <<EOF
 [Unit]
 Description=Clipy Clipboard History Daemon
+PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
@@ -65,15 +63,14 @@ Type=simple
 ExecStart=/usr/bin/python3 -u ${SCRIPT_DIR}/clipy-daemon.py
 Restart=always
 RestartSec=5
-Environment=${ENV_LINE}
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 EOF
 
 systemctl --user daemon-reload
 systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY || true
-systemctl --user enable clipy.service
+systemctl --user reenable clipy.service
 systemctl --user restart clipy.service
 echo -e "${G}  ✓ clipy.service enabled and started${N}"
 
