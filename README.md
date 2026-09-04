@@ -82,7 +82,7 @@ sudo apt install python3-gi xdotool
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/clipy.git
+   git clone https://github.com/manuvamsi/clipy.git
    cd clipy
    ```
 2. Make the installer script executable and run it:
