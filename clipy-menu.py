@@ -370,6 +370,41 @@ scrolledwindow scrollbar slider:hover {
     border-color: #ff5555;
     color: #ff8888;
 }
+
+/* ---- manual entry panel ---- */
+.manual-entry-box {
+    background-color: #121212;
+    border: 1px solid #262626;
+    border-radius: 10px;
+    padding: 10px;
+}
+.manual-entry-textview text {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: #ffffff;
+    font-family: 'Outfit', 'Cantarell', monospace;
+    font-size: 13px;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+}
+.manual-entry-textview text:focus {
+    border-color: rgba(255, 255, 255, 0.80);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+.manual-add-btn {
+    background-color: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    border-radius: 6px;
+    color: #ffffff;
+    font-family: 'Outfit', 'Cantarell', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+.manual-add-btn:hover {
+    background-color: rgba(255, 255, 255, 0.20);
+    border-color: #ffffff;
+}
 """
 
 # ---------------------------------------------------------------------------
@@ -673,6 +708,8 @@ class ClipyWindow(Gtk.Window):
         self.current_view = "history"  # "history" or "snippets"
         self.pasted = False
         self._dialog_open = False
+        self._manual_entry_visible = False
+        self._hover_locked = False
 
         # Layout
         self._build_ui()
@@ -781,6 +818,13 @@ class ClipyWindow(Gtk.Window):
         self.mode_label.set_halign(Gtk.Align.END)
         filter_row.pack_end(self.mode_label, False, False, 0)
 
+        self.btn_manual_entry = Gtk.Button(label="✏️ Add")
+        self.btn_manual_entry.get_style_context().add_class("filter-btn")
+        self.btn_manual_entry.set_can_focus(False)
+        self.btn_manual_entry.set_tooltip_text("Manually add text to clipboard history (N)")
+        self.btn_manual_entry.connect("clicked", lambda _: self._toggle_manual_entry())
+        filter_row.pack_end(self.btn_manual_entry, False, False, 0)
+
         self.btn_merge_now = Gtk.Button(label="⚡ Merge Now")
         self.btn_merge_now.get_style_context().add_class("filter-btn")
         self.btn_merge_now.get_style_context().add_class("active-filter")
@@ -820,6 +864,52 @@ class ClipyWindow(Gtk.Window):
         self.search_entry.set_margin_bottom(12)
         root.pack_start(self.search_entry, False, False, 0)
 
+        # Manual entry panel (hidden by default)
+        self.manual_entry_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.manual_entry_box.get_style_context().add_class("manual-entry-box")
+        self.manual_entry_box.set_no_show_all(True)
+        self.manual_entry_box.hide()
+
+        self.manual_entry_label = Gtk.Label(label="Type or paste text to add to clipboard history:")
+        self.manual_entry_label.set_halign(Gtk.Align.START)
+        self.manual_entry_label.get_style_context().add_class("clip-meta")
+        self.manual_entry_box.pack_start(self.manual_entry_label, False, False, 0)
+
+        scroll_manual = Gtk.ScrolledWindow()
+        scroll_manual.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll_manual.set_min_content_height(100)
+        scroll_manual.set_max_content_height(200)
+
+        self.manual_entry_view = Gtk.TextView()
+        self.manual_entry_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.manual_entry_view.set_left_margin(6)
+        self.manual_entry_view.set_right_margin(6)
+        self.manual_entry_view.set_top_margin(4)
+        self.manual_entry_view.set_bottom_margin(4)
+        self.manual_entry_view.get_style_context().add_class("manual-entry-textview")
+        self.manual_entry_view.connect("key-press-event", self._on_manual_entry_key)
+        scroll_manual.add(self.manual_entry_view)
+        self.manual_entry_box.pack_start(scroll_manual, True, True, 0)
+
+        manual_btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        manual_btn_row.set_halign(Gtk.Align.END)
+
+        btn_manual_cancel = Gtk.Button(label="Cancel")
+        btn_manual_cancel.set_can_focus(False)
+        btn_manual_cancel.get_style_context().add_class("filter-btn")
+        btn_manual_cancel.connect("clicked", lambda _: self._toggle_manual_entry())
+        manual_btn_row.pack_start(btn_manual_cancel, False, False, 0)
+
+        self.btn_manual_add = Gtk.Button(label="➕ Add to Clipboard")
+        self.btn_manual_add.set_can_focus(False)
+        self.btn_manual_add.get_style_context().add_class("manual-add-btn")
+        self.btn_manual_add.connect("clicked", lambda _: self._save_manual_entry())
+        manual_btn_row.pack_start(self.btn_manual_add, False, False, 0)
+
+        self.manual_entry_box.pack_start(manual_btn_row, False, False, 0)
+
+        root.pack_start(self.manual_entry_box, False, False, 0)
+
         # Scrollable card list
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -832,7 +922,7 @@ class ClipyWindow(Gtk.Window):
 
         # Footer shortcuts
         footer = Gtk.Label(
-            label="↑↓ Cards  ←→ Tabs  Enter Copy  O Open URL  P Pin  S Snippet  M Merge  T Tab  E Export  I Import  Del Remove  Esc Close"
+            label="↑↓ Cards  ←→ Tabs  Enter Copy  O Open URL  P Pin  S Snippet  M Merge  N Add  T Tab  E Export  I Import  Del Remove  Esc Close"
         )
         footer.get_style_context().add_class("footer-label")
         footer.set_margin_top(12)
@@ -1528,6 +1618,46 @@ class ClipyWindow(Gtk.Window):
             self.mode_label.set_text("")
         return False
 
+    # ---- Manual entry ----
+
+    def _toggle_manual_entry(self):
+        self._manual_entry_visible = not self._manual_entry_visible
+        if self._manual_entry_visible:
+            # NOTE: show_all() skips widgets with no_show_all set, so the
+            # flag must be cleared first or the panel never appears.
+            self.manual_entry_box.set_no_show_all(False)
+            self.manual_entry_box.show_all()
+            buf = self.manual_entry_view.get_buffer()
+            buf.set_text("")
+            self.manual_entry_view.grab_focus()
+            ctx = self.btn_manual_entry.get_style_context()
+            ctx.add_class("active-filter")
+        else:
+            self.manual_entry_box.hide()
+            ctx = self.btn_manual_entry.get_style_context()
+            ctx.remove_class("active-filter")
+
+    def _save_manual_entry(self):
+        buf = self.manual_entry_view.get_buffer()
+        start = buf.get_start_iter()
+        end = buf.get_end_iter()
+        text = buf.get_text(start, end, True).strip()
+        if not text:
+            self.mode_label.set_text("Nothing to add")
+            GLib.timeout_add(1800, lambda: self.mode_label.set_text(""))
+            return
+        content_type = classify_content(text)
+        save_text_clip(text, content_type)
+        # Also copy to clipboard
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(text, -1)
+        clipboard.store()
+        self.mode_label.set_text("✓ Added to clipboard history")
+        GLib.timeout_add(2000, lambda: self._clear_mode_label())
+        self._toggle_manual_entry()
+        self._load_items()
+        self._refresh_stats()
+
     def _on_focus_out(self, widget, event):
         # Keep the window open — do not auto-close on focus loss
         return True
@@ -1541,6 +1671,17 @@ class ClipyWindow(Gtk.Window):
         if 0 <= idx < len(self.filtered_items) and idx != self.focused_idx:
             self.focused_idx = idx
             self._update_focus()
+        return False
+
+    def _on_manual_entry_key(self, widget, event):
+        key = Gdk.keyval_name(event.keyval)
+        ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        if key == "Return" and ctrl:
+            self._save_manual_entry()
+            return True
+        if key == "Escape":
+            self._toggle_manual_entry()
+            return True
         return False
 
     def _show_card_context_menu(self, event, idx):
@@ -1682,6 +1823,12 @@ class ClipyWindow(Gtk.Window):
         n = len(self.filtered_items)
         has_ctrl_alt = bool(event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK))
 
+        if key in ("n", "N") and not has_ctrl_alt:
+            text = self.search_entry.get_text()
+            if not text.strip():
+                self._toggle_manual_entry()
+                return True
+
         if key in ("Right", "KP_Right"):
             text = self.search_entry.get_text()
             pos = self.search_entry.get_position()
@@ -1719,6 +1866,10 @@ class ClipyWindow(Gtk.Window):
 
     def _on_key_press(self, widget, event):
         if self.search_entry.has_focus():
+            return False
+        # Don't fire window shortcuts while typing in the manual entry box
+        # (key events bubble up from the TextView to the window).
+        if self._manual_entry_visible and self.manual_entry_view.has_focus():
             return False
 
         key = Gdk.keyval_name(event.keyval)
@@ -1769,6 +1920,9 @@ class ClipyWindow(Gtk.Window):
                 self.selected_indices.clear()
                 self.mode_label.set_text("[Merge Mode] Select cards, Enter to merge" if self.merge_mode else "")
                 self._render_cards()
+            return True
+        elif key in ("n", "N"):
+            self._toggle_manual_entry()
             return True
         elif key in ("t", "T"):
             new_view = "snippets" if self.current_view == "history" else "history"
